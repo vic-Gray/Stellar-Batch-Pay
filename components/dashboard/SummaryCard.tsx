@@ -6,11 +6,11 @@ import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 
 interface SummaryCardProps {
-  totalRecipients: number
-  validPayments: number
-  invalidPayments: number
-  estimatedFees: string
-  totalPayout: string
+  totalRecipients?: number
+  validPayments?: number
+  invalidPayments?: number
+  estimatedFees?: string
+  totalPayout?: string
   className?: string
 }
 

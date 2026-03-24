@@ -13,6 +13,9 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { SummaryCard } from "@/components/dashboard/SummaryCard"
+import { ActionCard } from "@/components/dashboard/ActionCard"
+import { TipsCard } from "@/components/dashboard/TipsCard"
 
 const stats = [
   {
@@ -119,37 +122,11 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid gap-8 lg:grid-cols-3">
-        {/* Quick Actions */}
+        {/* Transaction Actions Column */}
         <div className="lg:col-span-1 space-y-6">
-          <Card className="border-[#1F2937] bg-[#121827]">
-            <CardContent className="p-6 space-y-6">
-              <h2 className="text-xl font-bold text-white">Quick Actions</h2>
-              <div className="space-y-3">
-                <Button className="w-full h-12 bg-[#00D98B] hover:bg-[#00D98B]/90 text-white font-semibold">
-                  <Plus className="mr-2 h-4 w-4" /> Start New Batch Payment
-                </Button>
-                <Button variant="outline" className="w-full h-12 border-[#1F2937] bg-[#1F293780]/30 text-white hover:bg-[#1F2937] hover:text-white">
-                  Download Template
-                </Button>
-                <Button variant="outline" className="w-full h-12 border-[#1F2937] bg-[#1F293780]/30 text-white hover:bg-[#1F2937] hover:text-white">
-                  View Recent Batches
-                </Button>
-              </div>
-              <div className="rounded-lg bg-[#00D98B]/5 p-4 border border-[#00D98B]/10">
-                 <div className="flex gap-3">
-                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[#00D98B] mt-0.5">
-                      <span className="text-[10px] font-bold text-white">i</span>
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-[#00D98B]">Tip</h4>
-                      <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                        Use CSV templates for faster batch uploads and ensure address formatting is correct.
-                      </p>
-                    </div>
-                 </div>
-              </div>
-            </CardContent>
-          </Card>
+          <SummaryCard />
+          <ActionCard />
+          <TipsCard />
         </div>
 
         {/* Payment Volume Mockup Chart */}
