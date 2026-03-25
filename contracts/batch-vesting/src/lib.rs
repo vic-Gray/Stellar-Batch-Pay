@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec};
 
 #[contract]
 pub struct BatchVestingContract;
@@ -62,6 +62,11 @@ impl BatchVestingContract {
             };
 
             env.storage().persistent().set(&key, &new_vesting);
+
+            env.events().publish(
+                (Symbol::new(&env, "VestingDeposited"),),
+                (sender.clone(), recipient, amount, unlock_time),
+            );
         }
 
         let token_client = token::Client::new(&env, &token);
@@ -73,7 +78,7 @@ impl BatchVestingContract {
         recipient.require_auth();
 
         let key = DataKey::Vesting(recipient.clone());
-        let mut vesting: VestingData = env
+        let vesting: VestingData = env
             .storage()
             .persistent()
             .get(&key)
@@ -94,6 +99,11 @@ impl BatchVestingContract {
             &env.current_contract_address(),
             &recipient,
             &amount_to_transfer,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "VestingClaimed"),),
+            (recipient, amount_to_transfer),
         );
     }
 }
