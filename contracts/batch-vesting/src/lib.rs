@@ -151,7 +151,7 @@ impl BatchVestingContract {
             panic!("Nothing to revoke");
         }
 
-        if remaining.len() == 0 {
+        if remaining.is_empty() {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &remaining);
@@ -168,6 +168,83 @@ impl BatchVestingContract {
         env.events().publish(
             (Symbol::new(&env, "VestingRevoked"),),
             (recipient, sender, revoked_amount, unlock_time),
+        );
+    }
+
+    /// Revoke unvested schedules for multiple recipients in a single transaction.
+    pub fn batch_revoke(
+        env: Env,
+        caller: Address,
+        recipients: Vec<Address>,
+        token: Address,
+        unlock_time: u64,
+    ) {
+        caller.require_auth();
+
+        let current_time = env.ledger().timestamp();
+        let mut total_revoked: i128 = 0;
+
+        for i in 0..recipients.len() {
+            let recipient = recipients.get(i).unwrap();
+            let key = DataKey::Vesting(recipient.clone());
+            
+            let vestings: Vec<VestingData> = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or_else(|| panic!("No vesting found for recipient"));
+
+            let mut remaining = Vec::new(&env);
+            let mut revoked_amount: i128 = 0;
+            let mut schedule_sender: Option<Address> = None;
+            let mut item_found = false;
+
+            for j in 0..vestings.len() {
+                let vesting = vestings.get(j).unwrap();
+                if vesting.unlock_time == unlock_time && !item_found {
+                    item_found = true;
+                    if current_time >= vesting.unlock_time {
+                        panic!("Cannot revoke already vested funds");
+                    }
+                    if !Self::is_authorized(&env, &caller, &vesting.sender) {
+                        panic!("Unauthorized revoke attempt");
+                    }
+
+                    revoked_amount = vesting.amount;
+                    schedule_sender = Some(vesting.sender.clone());
+                } else {
+                    remaining.push_back(vesting);
+                }
+            }
+
+            if !item_found {
+                panic!("Vesting schedule not found");
+            }
+
+            if revoked_amount <= 0 {
+                panic!("Nothing to revoke");
+            }
+
+            if remaining.is_empty() {
+                env.storage().persistent().remove(&key);
+            } else {
+                env.storage().persistent().set(&key, &remaining);
+            }
+
+            total_revoked = total_revoked.checked_add(revoked_amount).unwrap();
+
+            let sender = schedule_sender.unwrap();
+            env.events().publish(
+                (Symbol::new(&env, "VestingRevoked"),),
+                (recipient, sender, revoked_amount, unlock_time),
+            );
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &caller,
+            &total_revoked,
         );
     }
 
@@ -200,7 +277,7 @@ impl BatchVestingContract {
             panic!("Vesting is currently locked");
         }
 
-        if remaining.len() == 0 {
+        if remaining.is_empty() {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &remaining);
