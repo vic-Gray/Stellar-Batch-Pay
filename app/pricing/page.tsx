@@ -3,6 +3,7 @@ import { Navbar } from "@/components/landing/navbar";
 import StellarFooter from "@/components/landing/StellarFooter";
 import { PayPerTransaction } from "@/components/pricing/pay-per-transaction";
 import { PricingPlans } from "@/components/pricing/pricing-plans";
+import { CompareFeatures } from "@/components/pricing/compare-features";
 import { CostExampleSection } from "@/components/pricing/CostExampleSection";
 import { FaqSection } from "@/components/pricing/faq-section";
 
@@ -41,6 +42,8 @@ export default function PricingPage() {
       {/* Pricing Plans Section */}
       <PricingPlans />
 
+      {/* Compare Features Section */}
+      <CompareFeatures />
       {/* Cost Example Section */}
       <CostExampleSection />
       {/* FAQ Section */}

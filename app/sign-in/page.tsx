@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import Link from "next/link"
 import Image from "next/image"
+import { Navbar } from "@/components/landing/navbar";
 
 export default function SignInPage() {
   const [showPassword, setShowPassword] = useState(false)
@@ -17,8 +18,10 @@ export default function SignInPage() {
   const [rememberDevice, setRememberDevice] = useState(false)
 
   return (
-    <div 
-    className="min-h-screen bg-gradient-to-br  from-[#030712] via-[#111827] to-[#030712] flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-[#030712] via-[#111827] to-[#030712] flex flex-col">
+      <Navbar />
+      <div 
+        className="flex-1 flex items-center justify-center p-4">
      
       <div className="w-full max-w-6xl mx-auto">
         <div className="grid lg:grid-cols-2 gap-8 lg:gap-12 items-center">
@@ -247,6 +250,7 @@ export default function SignInPage() {
             </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   )

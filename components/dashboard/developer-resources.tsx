@@ -12,7 +12,7 @@ const cliCommands = [
 
 export function DeveloperResources() {
   return (
-    <div className="space-y-6">
+    <div id="documentation" className="space-y-6">
       {/* Section Header */}
       <div className="flex flex-col gap-2">
         <h2 className="text-2xl font-bold tracking-tight text-white">
