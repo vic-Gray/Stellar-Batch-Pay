@@ -7,7 +7,7 @@ import Link from "next/link";
 export default function AboutPage() {
     return (
         <main className="min-h-screen bg-background text-foreground flex flex-col">
-            {/* <Navbar /> */}
+            <Navbar />
             <AboutHero />
             <ProductOverview />
             <TrustedTeamsSection />

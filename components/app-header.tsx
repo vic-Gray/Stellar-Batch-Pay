@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { Search, Bell, ChevronRight, Menu } from "lucide-react"
 import { Input } from "@/components/ui/input"
@@ -68,7 +69,14 @@ export function AppHeader() {
         )}
       </div>
 
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-4">
+        <Link
+          href="/dashboard/docs"
+          className="text-sm font-medium text-gray-400 hover:text-white transition-colors px-3 py-2 rounded-lg border border-transparent hover:border-[#2d4a4f]"
+        >
+          Documentation
+        </Link>
+
         <button className="relative text-gray-400 hover:text-white transition-colors">
           <Bell className="h-5 w-5" />
           <span className="absolute -top-1 -right-1 flex h-2 w-2">

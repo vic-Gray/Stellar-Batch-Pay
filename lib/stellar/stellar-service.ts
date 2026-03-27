@@ -3,6 +3,7 @@
  */
 
 import {
+  Account,
   Keypair,
   Transaction,
   TransactionBuilder,
@@ -10,7 +11,7 @@ import {
   Networks,
   Asset as StellarAsset,
   Operation,
-  Server, // Declared Server here
+  Horizon,
 } from 'stellar-sdk';
 
 import { PaymentInstruction, BatchResult, PaymentResult, BatchConfig } from './types';
@@ -19,7 +20,7 @@ import { validatePaymentInstruction, validateBatchConfig } from './validator';
 
 export class StellarService {
   private keypair: Keypair;
-  private server: Server;
+  private server: Horizon.Server;
   private network: 'testnet' | 'mainnet';
   private maxOperationsPerTransaction: number;
 
@@ -38,7 +39,7 @@ export class StellarService {
     const serverUrl = config.network === 'testnet' 
       ? 'https://horizon-testnet.stellar.org'
       : 'https://horizon.stellar.org';
-    this.server = new Server(serverUrl);
+    this.server = new Horizon.Server(serverUrl);
   }
 
   /**
@@ -50,7 +51,7 @@ export class StellarService {
 
     // Fetch source account
     const sourceAccount = await this.server.loadAccount(this.keypair.publicKey());
-    let sequenceNumber = BigInt(sourceAccount.sequenceNumber);
+    let sequenceNumber = BigInt(sourceAccount.sequenceNumber());
 
     // Process payments in batches
     const batches = this.createPaymentBatches(instructions);
@@ -104,6 +105,7 @@ export class StellarService {
     const totalAmount = instructions.reduce((sum, inst) => sum + parseFloat(inst.amount), 0);
 
     return {
+      batchId: `batch-${startTime.getTime()}`,
       totalRecipients: instructions.length,
       totalAmount: totalAmount.toString(),
       totalTransactions: batches.length,
@@ -155,16 +157,13 @@ export class StellarService {
   ): Promise<Transaction> {
     // Create transaction builder
     const transactionBuilder = new TransactionBuilder(
-      {
-        publicKey: this.keypair.publicKey(),
-        sequenceNumber: sequenceNumber.toString(),
-      },
+      new Account(this.keypair.publicKey(), sequenceNumber.toString()),
       {
         fee: BASE_FEE,
         networkPassphrase:
           this.network === 'testnet'
-            ? Networks.TESTNET_NETWORK_PASSPHRASE
-            : Networks.PUBLIC_NETWORK_PASSPHRASE,
+            ? Networks.TESTNET
+            : Networks.PUBLIC,
       }
     );
 
@@ -214,7 +213,7 @@ export class StellarService {
       } else {
         return {
           success: false,
-          error: response.result_codes?.operations?.join(', ') || 'Transaction failed',
+          error: 'Transaction failed',
         };
       }
     } catch (error) {

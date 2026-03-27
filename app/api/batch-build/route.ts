@@ -16,6 +16,7 @@ import {
     Operation,
     Horizon,
     Memo,
+    StrKey,
 } from "stellar-sdk";
 import { validatePaymentInstructions } from "@/lib/stellar";
 import { createBatches, parseAsset } from "@/lib/stellar/batcher";
@@ -44,9 +45,9 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        if (!/^G[A-Z2-7]{54,56}$/.test(publicKey)) {
+        if (!StrKey.isValidEd25519PublicKey(publicKey)) {
             return NextResponse.json(
-                { error: "Invalid Stellar public key format" },
+                { error: "Invalid Stellar public key checksum" },
                 { status: 400 },
             );
         }
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
         const validation = validatePaymentInstructions(payments);
         if (!validation.valid) {
             const errors = Array.from(validation.errors.entries())
-                .map(([idx, err]) => `Row ${idx}: ${err}`)
+                .map(([idx, err]) => `Row ${idx + 1}: ${err}`)
                 .slice(0, 5);
             return NextResponse.json(
                 { error: `Invalid payment instructions: ${errors.join("; ")}` },
@@ -85,7 +86,7 @@ export async function POST(request: NextRequest) {
         const server = new Horizon.Server(serverUrl);
 
         const sourceAccount = await server.loadAccount(publicKey);
-        const batches = createBatches(payments, MAX_OPS);
+        const batches = createBatches(payments, MAX_OPS, { network });
         const networkPassphrase =
             network === "testnet" ? Networks.TESTNET : Networks.PUBLIC;
 

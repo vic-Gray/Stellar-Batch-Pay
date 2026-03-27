@@ -2,7 +2,17 @@
  * Test suite for input parsing functions
  */
 
-import { parseJSON, parseCSV, parseInput } from '../lib/stellar/parser';
+import { Keypair } from 'stellar-sdk';
+
+import {
+  parseCSV,
+  parseInput,
+  parseJSON,
+  parsePaymentFile,
+} from '../lib/stellar/parser';
+
+const validAddress = Keypair.random().publicKey();
+const invalidChecksumAddress = `${validAddress.slice(0, -1)}${validAddress.endsWith('A') ? 'B' : 'A'}`;
 
 describe('JSON Parser', () => {
   test('parses valid JSON array', () => {
@@ -121,5 +131,23 @@ GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER,100,XLM`;
 
   test('throws on unknown format', () => {
     expect(() => parseInput('data', 'xml' as any)).toThrow();
+  });
+});
+
+describe('Payment File Analysis', () => {
+  test('returns row-level validation feedback for invalid CSV rows', () => {
+    const csv = `address,amount,asset
+${validAddress},100,XLM
+${invalidChecksumAddress},25,XLM
+,30,XLM`;
+
+    const result = parsePaymentFile(csv, 'csv');
+
+    expect(result.rows).toHaveLength(3);
+    expect(result.validPayments).toHaveLength(1);
+    expect(result.invalidCount).toBe(2);
+    expect(result.rows[1].rowNumber).toBe(3);
+    expect(result.rows[1].error).toContain('checksum');
+    expect(result.rows[2].error).toContain('address');
   });
 });

@@ -2,6 +2,16 @@
  * Batching logic for chunking payments into multiple transactions
  */
 
+import {
+  Account,
+  Asset as StellarAsset,
+  BASE_FEE,
+  Memo,
+  Networks,
+  Operation,
+  TransactionBuilder,
+} from 'stellar-sdk';
+
 import { PaymentInstruction, Asset } from './types';
 
 export interface Batch {
@@ -9,22 +19,81 @@ export interface Batch {
   payments: PaymentInstruction[];
 }
 
+export interface CreateBatchesOptions {
+  maxTransactionBytes?: number;
+  network?: 'testnet' | 'mainnet';
+}
+
+export const STELLAR_TRANSACTION_SIZE_LIMIT_BYTES = 100_000;
+const DEFAULT_TRANSACTION_SIZE_HEADROOM_BYTES = 95_000;
+const SIZE_ESTIMATION_ACCOUNT = new Account(
+  'GANQYDFSSJMTNLITJNXUPRUIFDVZQK2P4HWSX5CAI4SPIYPXNNFOPZQE',
+  '1',
+);
+
+function getTransactionByteLength(xdr: string | Buffer): number {
+  if (typeof xdr !== 'string') {
+    return xdr.length;
+  }
+
+  return Buffer.from(xdr, 'base64').length;
+}
+
+export function estimateBatchTransactionSize(
+  payments: PaymentInstruction[],
+  network: 'testnet' | 'mainnet' = 'testnet',
+): number {
+  const networkPassphrase =
+    network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
+
+  let builder = new TransactionBuilder(SIZE_ESTIMATION_ACCOUNT, {
+    fee: String(BASE_FEE),
+    networkPassphrase,
+  }).addMemo(Memo.text('batch-size-check'));
+
+  for (const payment of payments) {
+    const asset = parseAsset(payment.asset);
+    const stellarAsset =
+      asset.issuer === null
+        ? StellarAsset.native()
+        : new StellarAsset(asset.code, asset.issuer);
+
+    builder = builder.addOperation(
+      Operation.payment({
+        destination: payment.address,
+        asset: stellarAsset,
+        amount: payment.amount,
+      }),
+    );
+  }
+
+  const transaction = builder.setTimeout(300).build();
+  return getTransactionByteLength(transaction.toEnvelope().toXDR());
+}
+
 /**
  * Split payment instructions into batches based on max operations per transaction
  */
 export function createBatches(
   instructions: PaymentInstruction[],
-  maxOperationsPerTransaction: number
+  maxOperationsPerTransaction: number,
+  options: CreateBatchesOptions = {},
 ): Batch[] {
   const batches: Batch[] = [];
   let currentBatch: PaymentInstruction[] = [];
   let transactionIndex = 0;
+  const maxTransactionBytes =
+    options.maxTransactionBytes ?? DEFAULT_TRANSACTION_SIZE_HEADROOM_BYTES;
+  const network = options.network ?? 'testnet';
 
   for (const instruction of instructions) {
-    currentBatch.push(instruction);
+    const candidateBatch = [...currentBatch, instruction];
+    const exceedsOperationLimit =
+      candidateBatch.length > maxOperationsPerTransaction;
+    const exceedsSizeLimit =
+      estimateBatchTransactionSize(candidateBatch, network) > maxTransactionBytes;
 
-    // Each payment operation is 1 operation
-    if (currentBatch.length >= maxOperationsPerTransaction) {
+    if ((exceedsOperationLimit || exceedsSizeLimit) && currentBatch.length > 0) {
       batches.push({
         transactionIndex,
         payments: currentBatch,
@@ -32,6 +101,15 @@ export function createBatches(
       currentBatch = [];
       transactionIndex++;
     }
+
+    const singleInstructionSize = estimateBatchTransactionSize([instruction], network);
+    if (singleInstructionSize > maxTransactionBytes) {
+      throw new Error(
+        `Payment to ${instruction.address} exceeds the Stellar transaction size limit`,
+      );
+    }
+
+    currentBatch.push(instruction);
   }
 
   // Add remaining payments as final batch

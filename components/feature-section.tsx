@@ -53,7 +53,7 @@ const item = {
 
 export function FeatureSection() {
     return (
-        <section className="py-24 bg-secondary/30">
+        <section id="features" className="py-24 bg-secondary/30">
             <div className="container px-4 md:px-6 mx-auto">
                 <div className="flex flex-col items-center justify-center space-y-4 text-center mb-16">
                     <motion.div

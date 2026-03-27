@@ -2,21 +2,33 @@
  * Test suite for batching functions
  */
 
-import { createBatches, parseAsset, getBatchSummary } from '../lib/stellar/batcher';
+import { Keypair } from 'stellar-sdk';
+
+import {
+  createBatches,
+  estimateBatchTransactionSize,
+  getBatchSummary,
+  parseAsset,
+} from '../lib/stellar/batcher';
+
+const firstAddress = Keypair.random().publicKey();
+const secondAddress = Keypair.random().publicKey();
+const thirdAddress = Keypair.random().publicKey();
+const issuerAddress = Keypair.random().publicKey();
 
 const samplePayments = [
   {
-    address: 'GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER',
+    address: firstAddress,
     amount: '100',
     asset: 'XLM',
   },
   {
-    address: 'GBJCHUKZMTFSLOMNC7P4TS4VJJBTCYL3AEYZ7R37ZJNHYQM7MDEBC67',
+    address: secondAddress,
     amount: '50',
     asset: 'XLM',
   },
   {
-    address: 'GCNY5OXYSY4FKHOPT2SPOQZAOEIGKKAOMWCUT5LPYYCVYHI災OW7MFTD',
+    address: thirdAddress,
     amount: '75',
     asset: 'XLM',
   },
@@ -60,6 +72,29 @@ describe('Batch Creation', () => {
     expect(batches).toHaveLength(1);
     expect(batches[0].payments).toHaveLength(3);
   });
+
+  test('splits batches before exceeding transaction byte limit', () => {
+    const maxTransactionBytes =
+      estimateBatchTransactionSize(samplePayments) - 1;
+
+    const batches = createBatches(samplePayments, 100, {
+      maxTransactionBytes,
+    });
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0].payments).toHaveLength(2);
+    expect(batches[1].payments).toHaveLength(1);
+  });
+
+  test('rejects a single payment that exceeds the size limit', () => {
+    const size = estimateBatchTransactionSize([samplePayments[0]]);
+
+    expect(() =>
+      createBatches([samplePayments[0]], 100, {
+        maxTransactionBytes: size - 1,
+      }),
+    ).toThrow('exceeds the Stellar transaction size limit');
+  });
 });
 
 describe('Asset Parsing', () => {
@@ -70,15 +105,15 @@ describe('Asset Parsing', () => {
   });
 
   test('parses issued asset', () => {
-    const asset = parseAsset('USDC:GBUQWP3BOUZX34ULNQG23RQ6F4BWFIDBPPK7B7ILALX7DNZY5GJUSYM');
+    const asset = parseAsset(`USDC:${issuerAddress}`);
     expect(asset.code).toBe('USDC');
-    expect(asset.issuer).toBe('GBUQWP3BOUZX34ULNQG23RQ6F4BWFIDBPPK7B7ILALX7DNZY5GJUSYM');
+    expect(asset.issuer).toBe(issuerAddress);
   });
 
   test('parses asset with long code', () => {
-    const asset = parseAsset('LONGCODE123:GBUQWP3BOUZX34ULNQG23RQ6F4BWFIDBPPK7B7ILALX7DNZY5GJUSYM');
+    const asset = parseAsset(`LONGCODE123:${issuerAddress}`);
     expect(asset.code).toBe('LONGCODE123');
-    expect(asset.issuer).toBe('GBUQWP3BOUZX34ULNQG23RQ6F4BWFIDBPPK7B7ILALX7DNZY5GJUSYM');
+    expect(asset.issuer).toBe(issuerAddress);
   });
 });
 
@@ -101,30 +136,30 @@ describe('Batch Summary', () => {
   test('handles multiple assets', () => {
     const payments = [
       {
-        address: 'GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER',
+        address: firstAddress,
         amount: '100',
         asset: 'XLM',
       },
       {
-        address: 'GBJCHUKZMTFSLOMNC7P4TS4VJJBTCYL3AEYZ7R37ZJNHYQM7MDEBC67',
+        address: secondAddress,
         amount: '50',
-        asset: 'USDC:GBUQWP3BOUZX34ULNQG23RQ6F4BWFIDBPPK7B7ILALX7DNZY5GJUSYM',
+        asset: `USDC:${issuerAddress}`,
       },
     ];
     const summary = getBatchSummary(payments);
     expect(summary.assetBreakdown['XLM']).toBe(1);
-    expect(summary.assetBreakdown['USDC:GBUQWP3BOUZX34ULNQG23RQ6F4BWFIDBPPK7B7ILALX7DNZY5GJUSYM']).toBe(1);
+    expect(summary.assetBreakdown[`USDC:${issuerAddress}`]).toBe(1);
   });
 
   test('calculates correct total with decimal amounts', () => {
     const payments = [
       {
-        address: 'GBBD47UZM2HN7D7XZIZVG4KVAUC36THN5BES6RMNNOK5TUNXAUCVMAKER',
+        address: firstAddress,
         amount: '10.5',
         asset: 'XLM',
       },
       {
-        address: 'GBJCHUKZMTFSLOMNC7P4TS4VJJBTCYL3AEYZ7R37ZJNHYQM7MDEBC67',
+        address: secondAddress,
         amount: '20.25',
         asset: 'XLM',
       },

@@ -16,7 +16,7 @@ export function Navbar() {
     >
       <div className="container mx-auto px-4">
         <div className="h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
             <img
               src="/new%20logo.png"
               alt="BatchPay logo"
@@ -25,23 +25,23 @@ export function Navbar() {
             <div className="hidden sm:block font-semibold text-white">
               Stellar BatchPay
             </div>
-          </div>
+          </Link>
 
           <div className="hidden md:flex items-center gap-8">
             <Link
-              href="#features"
+              href="/#features"
               className="text-sm font-light text-[#E5E7EB] hover:text-[#E5E7EB]/90 transition-colors"
             >
               Features
             </Link>
             <Link
-              href="#docs"
+              href="/dashboard#documentation"
               className="text-sm font-light text-[#E5E7EB] hover:text-[#E5E7EB]/90 transition-colors"
             >
               Documentation
             </Link>
             <Link
-              href="#pricing"
+              href="/pricing"
               className="text-sm font-light text-[#E5E7EB] hover:text-[#E5E7EB]/90 transition-colors"
             >
               Pricing
@@ -111,19 +111,19 @@ export function Navbar() {
         {open && (
           <div className="md:hidden py-2 flex flex-col gap-2 pb-4">
             <Link
-              href="#features"
+              href="/#features"
               className="px-2 py-2 rounded text-[#E5E7EB] hover:bg-secondary/10"
             >
               Features
             </Link>
             <Link
-              href="#docs"
+              href="/dashboard#documentation"
               className="px-2 py-2 rounded text-[#E5E7EB] hover:bg-secondary/10"
             >
               Documentation
             </Link>
             <Link
-              href="#pricing"
+              href="/pricing"
               className="px-2 py-2 rounded text-[#E5E7EB] hover:bg-secondary/10"
             >
               Pricing

@@ -13,16 +13,7 @@ export default function HistoryPage() {
       {/* Header Section */}
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight text-white">Batch Payment History</h1>
-        <p className="text-gray-400">Search and filter your past batch payment operations</p>
-      </div>
-
-        <h1 className="text-3xl font-bold tracking-tight text-white">
-          Batch Payment History
-        </h1>
-        <p className="text-gray-400">
-          Review past batch transactions, track payment statuses, and access
-          detailed reports.
-        </p>
+        <p className="text-gray-400">Review past batch transactions, track payment statuses, and access detailed reports.</p>
       </div>
 
       {/* Metrics Grid */}
