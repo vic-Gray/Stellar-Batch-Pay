@@ -23,6 +23,19 @@ export interface PaymentInstruction {
   asset: string; // 'XLM' for native or 'CODE:ISSUER' for issued assets
 }
 
+export interface PaymentValidationRow {
+  rowNumber: number;
+  instruction: PaymentInstruction;
+  valid: boolean;
+  error?: string;
+}
+
+export interface ParsedPaymentFile {
+  rows: PaymentValidationRow[];
+  validPayments: PaymentInstruction[];
+  invalidCount: number;
+}
+
 export interface Asset {
   code: string;
   issuer: string | null; // null for native XLM

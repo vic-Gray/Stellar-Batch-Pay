@@ -3,7 +3,7 @@
  */
 
 import Papa from 'papaparse';
-import { PaymentInstruction } from './types';
+import { ParsedPaymentFile, PaymentInstruction } from './types';
 import { validatePaymentInstruction } from './validator';
 
 export function parseJSON(content: string): PaymentInstruction[] {
@@ -24,14 +24,25 @@ export function parseJSON(content: string): PaymentInstruction[] {
 }
 
 export function parseCSV(content: string): PaymentInstruction[] {
-  const lines = content.trim().split('\n');
-
-  if (lines.length < 2) {
+  if (!content.trim()) {
     throw new Error('CSV must have at least a header row and one data row');
   }
 
-  // Parse header
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const parsed = Papa.parse<Record<string, string>>(content, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (header: string) => header.trim().toLowerCase(),
+  });
+
+  if (parsed.errors.length > 0) {
+    throw new Error(`Failed to parse CSV: ${parsed.errors[0].message}`);
+  }
+
+  const headers = parsed.meta.fields?.map(header => header.trim().toLowerCase()) ?? [];
+  if (headers.length === 0 || parsed.data.length === 0) {
+    throw new Error('CSV must have at least a header row and one data row');
+  }
+
   const addressIndex = headers.indexOf('address');
   const amountIndex = headers.indexOf('amount');
   const assetIndex = headers.indexOf('asset');
@@ -40,25 +51,11 @@ export function parseCSV(content: string): PaymentInstruction[] {
     throw new Error('CSV must have "address", "amount", and "asset" columns');
   }
 
-  const instructions: PaymentInstruction[] = [];
-
-  // Parse data rows
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.length === 0) continue; // Skip empty lines
-
-    const parts = line.split(',').map(p => p.trim());
-
-    if (parts.length < Math.max(addressIndex, amountIndex, assetIndex) + 1) {
-      throw new Error(`Row ${i + 1} has insufficient columns`);
-    }
-
-    instructions.push({
-      address: parts[addressIndex],
-      amount: parts[amountIndex],
-      asset: parts[assetIndex],
-    });
-  }
+  const instructions = parsed.data.map(row => ({
+    address: String(row.address || '').trim(),
+    amount: String(row.amount || '').trim(),
+    asset: String(row.asset || '').trim(),
+  }));
 
   if (instructions.length === 0) {
     throw new Error('No valid payment instructions found in CSV');
@@ -75,6 +72,33 @@ export function parseInput(content: string, format: 'json' | 'csv'): PaymentInst
   } else {
     throw new Error(`Unknown format: ${format}`);
   }
+}
+
+export function analyzeParsedPayments(
+  instructions: PaymentInstruction[],
+  rowOffset = 1,
+): ParsedPaymentFile {
+  const rows = instructions.map((instruction, index) => {
+    const validation = validatePaymentInstruction(instruction);
+
+    return {
+      rowNumber: rowOffset + index,
+      instruction,
+      valid: validation.valid,
+      error: validation.error,
+    };
+  });
+
+  return {
+    rows,
+    validPayments: rows.filter(row => row.valid).map(row => row.instruction),
+    invalidCount: rows.filter(row => !row.valid).length,
+  };
+}
+
+export function parsePaymentFile(content: string, format: 'json' | 'csv'): ParsedPaymentFile {
+  const instructions = parseInput(content, format);
+  return analyzeParsedPayments(instructions, format === 'csv' ? 2 : 1);
 }
 
 export function parseFileStream(

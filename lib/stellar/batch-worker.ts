@@ -24,7 +24,7 @@ export async function processJobInBackground(
 
   try {
     // Compute batches up-front so we know totalBatches immediately
-    const batches = createBatches(payments, MAX_OPS);
+    const batches = createBatches(payments, MAX_OPS, { network });
 
     updateJob(jobId, {
       status: "processing",

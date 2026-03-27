@@ -57,7 +57,8 @@ export class StellarService {
       // Batch payments
       const batches = createBatches(
         instructions,
-        this.maxOperationsPerTransaction
+        this.maxOperationsPerTransaction,
+        { network: this.network },
       );
 
       let txCount = 0;

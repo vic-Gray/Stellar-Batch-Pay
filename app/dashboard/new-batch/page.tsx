@@ -4,6 +4,8 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUpload } from "@/components/file-upload";
+import { parsePaymentFile } from "@/lib/stellar";
+import type { ParsedPaymentFile } from "@/lib/stellar/types";
 import {
   Send,
   Info,
@@ -20,11 +22,37 @@ export default function NewBatchPaymentPage() {
   );
   const [file, setFile] = useState<File | null>(null);
   const [fileFormat, setFileFormat] = useState<"json" | "csv" | null>(null);
+  const [validationResult, setValidationResult] =
+    useState<ParsedPaymentFile | null>(null);
+  const [validationError, setValidationError] = useState<string>("");
 
-  const handleFileSelect = (selectedFile: File, format: "json" | "csv") => {
+  const handleFileSelect = async (
+    selectedFile: File,
+    format: "json" | "csv",
+  ) => {
     setFile(selectedFile);
     setFileFormat(format);
+
+    try {
+      const content = await selectedFile.text();
+      const parsed = parsePaymentFile(content, format);
+      setValidationResult(parsed);
+      setValidationError("");
+    } catch (error) {
+      setValidationResult(null);
+      setValidationError(
+        error instanceof Error ? error.message : "Failed to parse payment file",
+      );
+    }
   };
+
+  const totalRecipients = validationResult?.rows.length ?? 0;
+  const validPayments = validationResult?.validPayments.length ?? 0;
+  const invalidPayments = validationResult?.invalidCount ?? 0;
+  const estimatedFees = (validPayments * 0.00001).toFixed(5);
+  const totalPayout = validationResult?.validPayments
+    .reduce((sum, payment) => sum + parseFloat(payment.amount || "0"), 0)
+    .toFixed(2);
 
   return (
     <div className="space-y-6">
@@ -70,8 +98,119 @@ export default function NewBatchPaymentPage() {
                   )}
                 </div>
               )}
+              {validationError && (
+                <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                  {validationError}
+                </div>
+              )}
             </CardContent>
           </Card>
+
+          {validationResult && (
+            <Card className="bg-slate-900/50 border-slate-800">
+              <CardHeader>
+                <CardTitle className="text-xl text-white">
+                  Validation Preview
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-4">
+                    <p className="text-sm text-slate-400">Rows Parsed</p>
+                    <p className="mt-1 text-2xl font-bold text-white">
+                      {totalRecipients}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-4">
+                    <p className="text-sm text-emerald-200">Valid Rows</p>
+                    <p className="mt-1 text-2xl font-bold text-emerald-400">
+                      {validPayments}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-red-500/20 bg-red-500/10 p-4">
+                    <p className="text-sm text-red-200">Invalid Rows</p>
+                    <p className="mt-1 text-2xl font-bold text-red-400">
+                      {invalidPayments}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-lg border border-slate-800">
+                  <div className="max-h-96 overflow-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-slate-950">
+                        <tr className="text-slate-300">
+                          <th className="px-4 py-3 text-left font-medium">
+                            Row
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Address
+                          </th>
+                          <th className="px-4 py-3 text-right font-medium">
+                            Amount
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Asset
+                          </th>
+                          <th className="px-4 py-3 text-center font-medium">
+                            Status
+                          </th>
+                          <th className="px-4 py-3 text-left font-medium">
+                            Error
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {validationResult.rows.map((row) => (
+                          <tr
+                            key={`${row.rowNumber}-${row.instruction.address}-${row.instruction.amount}`}
+                            className="border-t border-slate-800 bg-slate-950/30 text-slate-200"
+                          >
+                            <td className="px-4 py-3 font-mono text-xs text-slate-400">
+                              {row.rowNumber}
+                            </td>
+                            <td
+                              className="max-w-[240px] truncate px-4 py-3 font-mono text-xs"
+                              title={row.instruction.address}
+                            >
+                              {row.instruction.address || "Missing address"}
+                            </td>
+                            <td className="px-4 py-3 text-right font-mono text-xs">
+                              {row.instruction.amount || "-"}
+                            </td>
+                            <td className="px-4 py-3 font-mono text-xs">
+                              {row.instruction.asset || "-"}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <span
+                                className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                  row.valid
+                                    ? "bg-emerald-500/15 text-emerald-300"
+                                    : "bg-red-500/15 text-red-300"
+                                }`}
+                                title={
+                                  row.valid
+                                    ? `Row ${row.rowNumber} is valid`
+                                    : `Row ${row.rowNumber}: ${row.error}`
+                                }
+                              >
+                                {row.valid ? "Valid" : "Invalid"}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-xs text-red-300">
+                              {row.error
+                                ? `Row ${row.rowNumber}: ${row.error}`
+                                : "No issues"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Network Selection */}
           <Card className="bg-slate-900/50 border-slate-800">
@@ -159,37 +298,47 @@ export default function NewBatchPaymentPage() {
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Total Recipients</span>
-                <span className="text-white font-semibold text-lg">25</span>
+                <span className="text-white font-semibold text-lg">
+                  {totalRecipients}
+                </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Valid Payments</span>
                 <span className="text-emerald-500 font-semibold text-lg">
-                  23
+                  {validPayments}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Invalid Payments</span>
-                <span className="text-red-500 font-semibold text-lg">2</span>
+                <span className="text-red-500 font-semibold text-lg">
+                  {invalidPayments}
+                </span>
               </div>
               <div className="border-t border-slate-800 pt-4 mt-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-slate-400">Estimated Fees</span>
-                  <span className="text-white font-medium">0.125 XLM</span>
+                  <span className="text-white font-medium">
+                    {estimatedFees} XLM
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Total Payout</span>
                   <span className="text-white font-bold text-xl">
-                    2,847.50 XLM
+                    {totalPayout ?? "0.00"} XLM
                   </span>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          {/* Submit Button */}
-          <Button className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-white text-base font-semibold">
+          <Button
+            disabled={!validationResult || invalidPayments > 0}
+            className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-white text-base font-semibold disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-300"
+          >
             <Send className="w-5 h-5 mr-2" />
-            Submit Batch Payment
+            {invalidPayments > 0
+              ? "Resolve Validation Errors"
+              : "Submit Batch Payment"}
           </Button>
 
           {/* Info Messages */}
