@@ -35,49 +35,49 @@ const samplePayments = [
 ];
 
 describe('Batch Creation', () => {
-  test('creates single batch when below max operations', () => {
-    const batches = createBatches(samplePayments, 100);
+  test('creates single batch when below max operations', async () => {
+    const batches = await createBatches(samplePayments, 100);
     expect(batches).toHaveLength(1);
     expect(batches[0].payments).toHaveLength(3);
   });
 
-  test('creates multiple batches when exceeding max operations', () => {
-    const batches = createBatches(samplePayments, 2);
+  test('creates multiple batches when exceeding max operations', async () => {
+    const batches = await createBatches(samplePayments, 2);
     expect(batches).toHaveLength(2);
     expect(batches[0].payments).toHaveLength(2);
     expect(batches[1].payments).toHaveLength(1);
   });
 
-  test('assigns correct transaction indices', () => {
-    const batches = createBatches(samplePayments, 1);
+  test('assigns correct transaction indices', async () => {
+    const batches = await createBatches(samplePayments, 1);
     expect(batches[0].transactionIndex).toBe(0);
     expect(batches[1].transactionIndex).toBe(1);
     expect(batches[2].transactionIndex).toBe(2);
   });
 
-  test('preserves payment data in batches', () => {
-    const batches = createBatches(samplePayments, 10);
+  test('preserves payment data in batches', async () => {
+    const batches = await createBatches(samplePayments, 10);
     expect(batches[0].payments[0]).toEqual(samplePayments[0]);
   });
 
-  test('handles single payment', () => {
+  test('handles single payment', async () => {
     const payments = [samplePayments[0]];
-    const batches = createBatches(payments, 1);
+    const batches = await createBatches(payments, 1);
     expect(batches).toHaveLength(1);
     expect(batches[0].payments).toHaveLength(1);
   });
 
-  test('handles large batch size', () => {
-    const batches = createBatches(samplePayments, 1000);
+  test('handles large batch size', async () => {
+    const batches = await createBatches(samplePayments, 1000);
     expect(batches).toHaveLength(1);
     expect(batches[0].payments).toHaveLength(3);
   });
 
-  test('splits batches before exceeding transaction byte limit', () => {
+  test('splits batches before exceeding transaction byte limit', async () => {
     const maxTransactionBytes =
       estimateBatchTransactionSize(samplePayments) - 1;
 
-    const batches = createBatches(samplePayments, 100, {
+    const batches = await createBatches(samplePayments, 100, {
       maxTransactionBytes,
     });
 
@@ -86,14 +86,14 @@ describe('Batch Creation', () => {
     expect(batches[1].payments).toHaveLength(1);
   });
 
-  test('rejects a single payment that exceeds the size limit', () => {
+  test('rejects a single payment that exceeds the size limit', async () => {
     const size = estimateBatchTransactionSize([samplePayments[0]]);
 
-    expect(() =>
+    await expect(
       createBatches([samplePayments[0]], 100, {
         maxTransactionBytes: size - 1,
       }),
-    ).toThrow('exceeds the Stellar transaction size limit');
+    ).rejects.toThrow('exceeds the Stellar transaction size limit');
   });
 });
 

@@ -9,6 +9,7 @@ import { StellarService } from "./server";
 import { updateJob } from "../job-store";
 import { createBatches } from "./batcher";
 import type { PaymentInstruction, BatchResult, PaymentResult } from "./types";
+import { Horizon } from "stellar-sdk";
 
 /**
  * Process a batch job in the background. This function must NOT be awaited
@@ -23,8 +24,14 @@ export async function processJobInBackground(
   const MAX_OPS = 100;
 
   try {
+    // Create server instance for fee fetching
+    const serverUrl = network === 'testnet'
+      ? 'https://horizon-testnet.stellar.org'
+      : 'https://horizon.stellar.org';
+    const server = new Horizon.Server(serverUrl);
+
     // Compute batches up-front so we know totalBatches immediately
-    const batches = createBatches(payments, MAX_OPS, { network });
+    const batches = await createBatches(payments, MAX_OPS, { network, server });
 
     updateJob(jobId, {
       status: "processing",

@@ -5,14 +5,16 @@
 import {
   Account,
   Asset as StellarAsset,
-  BASE_FEE,
   Memo,
   Networks,
   Operation,
   TransactionBuilder,
+  Horizon,
 } from 'stellar-sdk';
+import Big from 'big.js';
 
 import { PaymentInstruction, Asset } from './types';
+import { getRecommendedFee } from './fee-service';
 
 export interface Batch {
   transactionIndex: number;
@@ -22,6 +24,7 @@ export interface Batch {
 export interface CreateBatchesOptions {
   maxTransactionBytes?: number;
   network?: 'testnet' | 'mainnet';
+  server?: Horizon.Server;
 }
 
 export const STELLAR_TRANSACTION_SIZE_LIMIT_BYTES = 100_000;
@@ -42,12 +45,16 @@ function getTransactionByteLength(xdr: string | Buffer): number {
 export function estimateBatchTransactionSize(
   payments: PaymentInstruction[],
   network: 'testnet' | 'mainnet' = 'testnet',
+  fee?: number,
 ): number {
   const networkPassphrase =
     network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 
+  // Use provided fee or default to 100 stroops (minimum fee)
+  const feeToUse = fee !== undefined ? fee : 100;
+
   let builder = new TransactionBuilder(SIZE_ESTIMATION_ACCOUNT, {
-    fee: String(BASE_FEE),
+    fee: String(feeToUse),
     networkPassphrase,
   }).addMemo(Memo.text('batch-size-check'));
 
@@ -74,11 +81,11 @@ export function estimateBatchTransactionSize(
 /**
  * Split payment instructions into batches based on max operations per transaction
  */
-export function createBatches(
+export async function createBatches(
   instructions: PaymentInstruction[],
   maxOperationsPerTransaction: number,
   options: CreateBatchesOptions = {},
-): Batch[] {
+): Promise<Batch[]> {
   const batches: Batch[] = [];
   let currentBatch: PaymentInstruction[] = [];
   let transactionIndex = 0;
@@ -86,12 +93,22 @@ export function createBatches(
     options.maxTransactionBytes ?? DEFAULT_TRANSACTION_SIZE_HEADROOM_BYTES;
   const network = options.network ?? 'testnet';
 
+  // Fetch dynamic fee for size estimation
+  let dynamicFee: number | undefined;
+  if (options.server) {
+    try {
+      dynamicFee = await getRecommendedFee(options.server);
+    } catch (error) {
+      console.warn('Failed to fetch dynamic fee for size estimation, using default:', error);
+    }
+  }
+
   for (const instruction of instructions) {
     const candidateBatch = [...currentBatch, instruction];
     const exceedsOperationLimit =
       candidateBatch.length > maxOperationsPerTransaction;
     const exceedsSizeLimit =
-      estimateBatchTransactionSize(candidateBatch, network) > maxTransactionBytes;
+      estimateBatchTransactionSize(candidateBatch, network, dynamicFee) > maxTransactionBytes;
 
     if ((exceedsOperationLimit || exceedsSizeLimit) && currentBatch.length > 0) {
       batches.push({
@@ -102,7 +119,7 @@ export function createBatches(
       transactionIndex++;
     }
 
-    const singleInstructionSize = estimateBatchTransactionSize([instruction], network);
+    const singleInstructionSize = estimateBatchTransactionSize([instruction], network, dynamicFee);
     if (singleInstructionSize > maxTransactionBytes) {
       throw new Error(
         `Payment to ${instruction.address} exceeds the Stellar transaction size limit`,
@@ -147,13 +164,13 @@ import { validatePaymentInstruction } from './validator';
  * Get summary statistics for a batch of payments
  */
 export function getBatchSummary(instructions: PaymentInstruction[]) {
-  let totalAmount = 0;
+  let totalAmount = new Big('0');
   let validCount = 0;
   let invalidCount = 0;
   const assetCount = new Map<string, number>();
 
   for (const instruction of instructions) {
-    totalAmount += parseFloat(instruction.amount);
+    totalAmount = totalAmount.plus(instruction.amount);
     assetCount.set(instruction.asset, (assetCount.get(instruction.asset) || 0) + 1);
 
     const validation = validatePaymentInstruction(instruction);

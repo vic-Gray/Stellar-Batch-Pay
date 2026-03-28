@@ -2,6 +2,7 @@
 
 import React, { useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/components/ui/use-toast';
 
 interface FileUploadProps {
   onFileSelect: (file: File, format: 'json' | 'csv') => void;
@@ -18,7 +19,11 @@ export function FileUpload({ onFileSelect, disabled }: FileUploadProps) {
 
     const ext = file.name.toLowerCase().split('.').pop();
     if (!['json', 'csv'].includes(ext || '')) {
-      alert('Please select a JSON or CSV file');
+      toast({
+        title: "Invalid file type",
+        description: "Please select a JSON or CSV file",
+        variant: "destructive",
+      });
       return;
     }
 
@@ -35,7 +40,11 @@ export function FileUpload({ onFileSelect, disabled }: FileUploadProps) {
 
     const ext = file.name.toLowerCase().split('.').pop();
     if (!['json', 'csv'].includes(ext || '')) {
-      alert('Please select a JSON or CSV file');
+      toast({
+        title: "Invalid file type",
+        description: "Please select a JSON or CSV file",
+        variant: "destructive",
+      });
       return;
     }
 

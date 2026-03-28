@@ -7,7 +7,6 @@ import {
   Keypair,
   Transaction,
   TransactionBuilder,
-  BASE_FEE,
   Networks,
   Asset as StellarAsset,
   Operation,
@@ -17,6 +16,7 @@ import {
 import { PaymentInstruction, BatchResult, PaymentResult, BatchConfig } from './types';
 import { parseAsset } from './batcher';
 import { validatePaymentInstruction, validateBatchConfig } from './validator';
+import { getRecommendedFee } from './fee-service';
 
 export class StellarService {
   private keypair: Keypair;
@@ -153,11 +153,14 @@ export class StellarService {
     payments: PaymentInstruction[],
     sequenceNumber: bigint
   ): Promise<Transaction> {
+    // Fetch dynamic fee from Horizon
+    const dynamicFee = await getRecommendedFee(this.server);
+
     // Create transaction builder
     const transactionBuilder = new TransactionBuilder(
       new Account(this.keypair.publicKey(), sequenceNumber.toString()),
       {
-        fee: BASE_FEE,
+        fee: String(dynamicFee),
         networkPassphrase:
           this.network === 'testnet'
             ? Networks.TESTNET
