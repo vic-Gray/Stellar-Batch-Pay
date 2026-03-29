@@ -33,14 +33,16 @@ pub struct RevokeRequest {
 
 #[contracttype]
 pub enum DataKey {
-    Vesting(Address, u32), // (recipient, index) — granular per-schedule key
-    VestingCount(Address), // total number of schedules for a recipient
+    VestingEntry(Address, u32), // (recipient, index) — granular per-schedule key
+    VestingCount(Address),      // total number of schedules for a recipient
     Admin,
     PendingAdmin,
     Paused,
     /// #195: Permanent flag written on first set_admin and never cleared,
     /// even after renounce_admin.  Prevents admin re-claim post-renouncement.
     AdminInitialized,
+    /// DEPRECATED: Old Vec<VestingData> storage key for backward compatibility
+    Vesting(Address),
 }
 
 #[soroban_sdk::contracterror]
@@ -136,58 +138,97 @@ impl BatchVestingContract {
         }
     }
 
+    /// Migrates old Vec<VestingData> to the new indexed mapping design on-the-fly.
+    fn migrate_if_needed(env: &Env, recipient: &Address) {
+        let old_key = DataKey::Vesting(recipient.clone());
+        if let Some(old_vestings) = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<VestingData>>(&old_key)
+        {
+            let count = old_vestings.len();
+            for i in 0..count {
+                let vesting = old_vestings.get(i).unwrap();
+                Self::set_vesting(env, recipient, i, &vesting);
+            }
+            Self::set_vesting_count(env, recipient, count);
+            env.storage().persistent().remove(&old_key);
+        }
+    }
+
     /// Returns the current schedule count for a recipient.
-    fn get_count(env: &Env, recipient: &Address) -> u32 {
+    fn get_vesting_count(env: &Env, recipient: &Address) -> u32 {
+        Self::migrate_if_needed(env, recipient);
         env.storage()
             .persistent()
             .get(&DataKey::VestingCount(recipient.clone()))
             .unwrap_or(0u32)
     }
 
-    /// Appends a new vesting schedule for a recipient and returns its index.
-    fn push_vesting(env: &Env, recipient: &Address, data: &VestingData) -> u32 {
-        let idx = Self::get_count(env, recipient);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Vesting(recipient.clone(), idx), data);
-        env.storage()
-            .persistent()
-            .set(&DataKey::VestingCount(recipient.clone()), &(idx + 1));
-        idx
-    }
-
-    /// Reads a single vesting schedule by index. Panics if missing.
-    fn get_vesting(env: &Env, recipient: &Address, idx: u32) -> VestingData {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Vesting(recipient.clone(), idx))
-            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::NotFound))
-    }
-
-    /// Removes a schedule by swapping it with the last entry (O(1) removal).
-    fn remove_vesting(env: &Env, recipient: &Address, idx: u32) {
-        let count = Self::get_count(env, recipient);
-        let last = count - 1;
-        if idx != last {
-            // Move last entry into the removed slot
-            let last_data = Self::get_vesting(env, recipient, last);
-            env.storage()
-                .persistent()
-                .set(&DataKey::Vesting(recipient.clone(), idx), &last_data);
-            Self::extend_ttl_vesting(env, recipient, idx);
-        }
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Vesting(recipient.clone(), last));
-        if last == 0 {
+    fn set_vesting_count(env: &Env, recipient: &Address, count: u32) {
+        if count == 0 {
             env.storage()
                 .persistent()
                 .remove(&DataKey::VestingCount(recipient.clone()));
         } else {
             env.storage()
                 .persistent()
-                .set(&DataKey::VestingCount(recipient.clone()), &last);
+                .set(&DataKey::VestingCount(recipient.clone()), &count);
+            env.storage().persistent().extend_ttl(
+                &DataKey::VestingCount(recipient.clone()),
+                BUMP_THRESHOLD,
+                BUMP_EXTEND_TO,
+            );
         }
+    }
+
+    /// Appends a new vesting schedule for a recipient and returns its index.
+    fn push_vesting(env: &Env, recipient: &Address, data: &VestingData) -> u32 {
+        let idx = Self::get_vesting_count(env, recipient);
+        Self::set_vesting(env, recipient, idx, data);
+        Self::set_vesting_count(env, recipient, idx + 1);
+        idx
+    }
+
+    /// Reads a single vesting schedule by index. Panics if missing.
+    fn get_vesting(env: &Env, recipient: &Address, index: u32) -> VestingData {
+        Self::migrate_if_needed(env, recipient);
+        env.storage()
+            .persistent()
+            .get(&DataKey::VestingEntry(recipient.clone(), index))
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::NotFound))
+    }
+
+    fn set_vesting(env: &Env, recipient: &Address, index: u32, vesting: &VestingData) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::VestingEntry(recipient.clone(), index), vesting);
+        env.storage().persistent().extend_ttl(
+            &DataKey::VestingEntry(recipient.clone(), index),
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
+    }
+
+    /// Removes a schedule by swapping it with the last entry (O(1) removal).
+    fn remove_vesting(env: &Env, recipient: &Address, index: u32) {
+        let count = Self::get_vesting_count(env, recipient);
+        if index >= count {
+            return; // Or panic, handled upstream
+        }
+
+        let last = count - 1;
+        if index != last {
+            // Move last entry into the removed slot
+            let last_data = Self::get_vesting(env, recipient, last);
+            Self::set_vesting(env, recipient, index, &last_data);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::VestingEntry(recipient.clone(), last));
+
+        Self::set_vesting_count(env, recipient, last);
     }
 
     fn extend_ttl_admin(env: &Env) {
@@ -197,14 +238,18 @@ impl BatchVestingContract {
                 .extend_ttl(&DataKey::Admin, BUMP_THRESHOLD, BUMP_EXTEND_TO);
         }
         if env.storage().persistent().has(&DataKey::PendingAdmin) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::PendingAdmin, BUMP_THRESHOLD, BUMP_EXTEND_TO);
+            env.storage().persistent().extend_ttl(
+                &DataKey::PendingAdmin,
+                BUMP_THRESHOLD,
+                BUMP_EXTEND_TO,
+            );
         }
         if env.storage().persistent().has(&DataKey::AdminInitialized) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::AdminInitialized, BUMP_THRESHOLD, BUMP_EXTEND_TO);
+            env.storage().persistent().extend_ttl(
+                &DataKey::AdminInitialized,
+                BUMP_THRESHOLD,
+                BUMP_EXTEND_TO,
+            );
         }
     }
 
@@ -216,7 +261,7 @@ impl BatchVestingContract {
 
     fn extend_ttl_vesting(env: &Env, recipient: &Address, idx: u32) {
         env.storage().persistent().extend_ttl(
-            &DataKey::Vesting(recipient.clone(), idx),
+            &DataKey::VestingEntry(recipient.clone(), idx),
             BUMP_THRESHOLD,
             BUMP_EXTEND_TO,
         );
@@ -263,7 +308,7 @@ impl BatchVestingContract {
             }
 
             // #196: reject deposit if recipient is already at the schedule cap.
-            let current_count = Self::get_count(&env, &recipient);
+            let current_count = Self::get_vesting_count(&env, &recipient);
             if current_count >= MAX_SCHEDULES_PER_RECIPIENT {
                 soroban_sdk::panic_with_error!(&env, VestingError::ScheduleLimitExceeded);
             }
@@ -283,7 +328,11 @@ impl BatchVestingContract {
             Self::extend_ttl_vesting(&env, &recipient, idx);
 
             env.events().publish(
-                (Symbol::new(&env, "VestingDeposited"), sender.clone(), recipient),
+                (
+                    Symbol::new(&env, "VestingDeposited"),
+                    sender.clone(),
+                    recipient,
+                ),
                 (amount, unlock_time),
             );
         }
@@ -346,10 +395,8 @@ impl BatchVestingContract {
         Self::remove_pending_admin_internal(&env);
         Self::extend_ttl_admin(&env);
 
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferred"),),
-            (admin, new_admin),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferred"),), (admin, new_admin));
     }
 
     /// Renounce admin rights and clear any in-flight transfer.
@@ -378,7 +425,7 @@ impl BatchVestingContract {
         Self::panic_if_paused(&env);
         caller.require_auth();
 
-        let count = Self::get_count(&env, &recipient);
+        let count = Self::get_vesting_count(&env, &recipient);
         if index >= count {
             soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
         }
@@ -416,11 +463,7 @@ impl BatchVestingContract {
     /// Requests are processed in descending index order so that swap-with-last
     /// removal does not corrupt the indices of pending requests that target the
     /// same recipient (#198).
-    pub fn batch_revoke(
-        env: Env,
-        caller: Address,
-        requests: Vec<RevokeRequest>,
-    ) -> Vec<bool> {
+    pub fn batch_revoke(env: Env, caller: Address, requests: Vec<RevokeRequest>) -> Vec<bool> {
         Self::panic_if_paused(&env);
         caller.require_auth();
         Self::panic_if_batch_too_large(requests.len());
@@ -466,7 +509,7 @@ impl BatchVestingContract {
             let recipient = &request.recipient;
             let index = request.index;
 
-            let count = Self::get_count(&env, recipient);
+            let count = Self::get_vesting_count(&env, recipient);
             if index >= count {
                 continue;
             }
@@ -493,7 +536,11 @@ impl BatchVestingContract {
             token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
 
             env.events().publish(
-                (Symbol::new(&env, "VestingRevoked"), recipient.clone(), sender),
+                (
+                    Symbol::new(&env, "VestingRevoked"),
+                    recipient.clone(),
+                    sender,
+                ),
                 (revoked_amount, unlock_time),
             );
             results.set(pos, true);
@@ -513,13 +560,12 @@ impl BatchVestingContract {
         Self::panic_if_paused(&env);
         recipient.require_auth();
 
-        let count = Self::get_count(&env, &recipient);
+        let count = Self::get_vesting_count(&env, &recipient);
         if count == 0 {
             soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
         }
 
         let current_time = env.ledger().timestamp();
-        let mut amount_to_transfer: i128 = 0;
 
         // Collect claimable indices: unlocked.
         let mut claimable: Vec<u32> = Vec::new(&env);
@@ -540,15 +586,11 @@ impl BatchVestingContract {
         let claimable_len = claimable.len();
         for k in (0..claimable_len).rev() {
             let idx = claimable.get(k).unwrap();
-            let current_count = Self::get_count(&env, &recipient);
+            let current_count = Self::get_vesting_count(&env, &recipient);
             if idx < current_count {
                 let vesting = Self::get_vesting(&env, &recipient, idx);
                 let token_client = token::Client::new(&env, &vesting.token);
-                token_client.transfer(
-                    &env.current_contract_address(),
-                    &recipient,
-                    &vesting.amount,
-                );
+                token_client.transfer(&env.current_contract_address(), &recipient, &vesting.amount);
 
                 Self::remove_vesting(&env, &recipient, idx);
 
@@ -558,6 +600,22 @@ impl BatchVestingContract {
                 );
             }
         }
+    }
+    /// Bonus: Get paginated vesting schedules for a recipient
+    pub fn get_vestings(env: Env, recipient: Address, start: u32, limit: u32) -> Vec<VestingData> {
+        let count = Self::get_vesting_count(&env, &recipient);
+        let mut result_vec = Vec::new(&env);
+
+        if start >= count {
+            return result_vec;
+        }
+
+        let end = core::cmp::min(start + limit, count);
+        for i in start..end {
+            result_vec.push_back(Self::get_vesting(&env, &recipient, i));
+        }
+
+        result_vec
     }
 }
 mod test;

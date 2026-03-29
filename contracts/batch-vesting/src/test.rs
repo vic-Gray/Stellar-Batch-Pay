@@ -570,10 +570,19 @@ fn test_batch_revoke_by_sender() {
         li.timestamp = 500;
     });
 
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-        RevokeRequest { recipient: recipient2.clone(), index: 0 }
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [
+            RevokeRequest {
+                recipient: recipient1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient2.clone(),
+                index: 0,
+            },
+        ],
+    );
     let results = client.batch_revoke(&sender, &revoke_requests);
 
     assert_eq!(results.get(0).unwrap(), true);
@@ -614,16 +623,25 @@ fn test_batch_revoke_by_admin_fails() {
         li.timestamp = 500;
     });
 
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-        RevokeRequest { recipient: recipient2.clone(), index: 0 },
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [
+            RevokeRequest {
+                recipient: recipient1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient2.clone(),
+                index: 0,
+            },
+        ],
+    );
     let results = client.batch_revoke(&admin, &revoke_requests);
     // Admin cannot revoke, so results should be false
     assert_eq!(results.get(0).unwrap(), false);
     assert_eq!(results.get(1).unwrap(), false);
-    assert_eq!(token.balance(&sender), 600);  // sender spent 400 on deposit
-    assert_eq!(token.balance(&admin), 0);     // admin got nothing
+    assert_eq!(token.balance(&sender), 600); // sender spent 400 on deposit
+    assert_eq!(token.balance(&admin), 0); // admin got nothing
     assert_eq!(token.balance(&contract_id), 400); // funds remain locked
 }
 
@@ -682,10 +700,19 @@ fn test_batch_revoke_multiple_senders_fails_for_admin() {
     });
 
     // Admin revokes both in a batch
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-        RevokeRequest { recipient: recipient2.clone(), index: 0 }
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [
+            RevokeRequest {
+                recipient: recipient1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient2.clone(),
+                index: 0,
+            },
+        ],
+    );
     let results = client.batch_revoke(&admin, &revoke_requests);
 
     // Admin revokes should fail
@@ -728,14 +755,31 @@ fn test_batch_revoke_unauthorized() {
         li.timestamp = 500;
     });
 
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-        RevokeRequest { recipient: recipient2.clone(), index: 0 }
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [
+            RevokeRequest {
+                recipient: recipient1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient2.clone(),
+                index: 0,
+            },
+        ],
+    );
     // Attacker is not sender or admin, so both entries fail
     let results = client.batch_revoke(&attacker, &revoke_requests);
-    assert_eq!(results.get(0).unwrap(), false, "Unauthorized attacker should fail for recipient1");
-    assert_eq!(results.get(1).unwrap(), false, "Unauthorized attacker should fail for recipient2");
+    assert_eq!(
+        results.get(0).unwrap(),
+        false,
+        "Unauthorized attacker should fail for recipient1"
+    );
+    assert_eq!(
+        results.get(1).unwrap(),
+        false,
+        "Unauthorized attacker should fail for recipient2"
+    );
     // Funds remain untouched
     assert_eq!(token.balance(&contract_id), 300);
 }
@@ -771,13 +815,30 @@ fn test_batch_revoke_already_vested() {
         li.timestamp = 1000;
     });
 
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-        RevokeRequest { recipient: recipient2.clone(), index: 0 },
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [
+            RevokeRequest {
+                recipient: recipient1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient2.clone(),
+                index: 0,
+            },
+        ],
+    );
     let results = client.batch_revoke(&sender, &revoke_requests);
-    assert_eq!(results.get(0).unwrap(), false, "Already-vested entry should return false");
-    assert_eq!(results.get(1).unwrap(), false, "Already-vested entry should return false");
+    assert_eq!(
+        results.get(0).unwrap(),
+        false,
+        "Already-vested entry should return false"
+    );
+    assert_eq!(
+        results.get(1).unwrap(),
+        false,
+        "Already-vested entry should return false"
+    );
     // Funds are still in contract, not revoked
     assert_eq!(token.balance(&contract_id), 300);
 }
@@ -797,15 +858,32 @@ fn test_batch_revoke_no_vesting() {
     let token_admin = Address::generate(&env);
     let (_token, _) = create_token_contract(&env, &token_admin);
 
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-        RevokeRequest { recipient: recipient2.clone(), index: 0 },
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [
+            RevokeRequest {
+                recipient: recipient1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient2.clone(),
+                index: 0,
+            },
+        ],
+    );
 
     // Neither recipient has any vesting — both should return false
     let results = client.batch_revoke(&sender, &revoke_requests);
-    assert_eq!(results.get(0).unwrap(), false, "No-vesting entry should return false");
-    assert_eq!(results.get(1).unwrap(), false, "No-vesting entry should return false");
+    assert_eq!(
+        results.get(0).unwrap(),
+        false,
+        "No-vesting entry should return false"
+    );
+    assert_eq!(
+        results.get(1).unwrap(),
+        false,
+        "No-vesting entry should return false"
+    );
 }
 
 #[test]
@@ -838,10 +916,19 @@ fn test_batch_revoke_events_emission() {
         li.timestamp = 500;
     });
 
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-        RevokeRequest { recipient: recipient2.clone(), index: 0 },
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [
+            RevokeRequest {
+                recipient: recipient1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient2.clone(),
+                index: 0,
+            },
+        ],
+    );
     let results = client.batch_revoke(&sender, &revoke_requests);
     assert_eq!(results.get(0).unwrap(), true);
     assert_eq!(results.get(1).unwrap(), true);
@@ -909,9 +996,13 @@ fn test_batch_revoke_partial_recipients() {
         li.timestamp = 500;
     });
 
-    let revoke_requests = Vec::from_array(&env, [
-        RevokeRequest { recipient: recipient1.clone(), index: 0 },
-    ]);
+    let revoke_requests = Vec::from_array(
+        &env,
+        [RevokeRequest {
+            recipient: recipient1.clone(),
+            index: 0,
+        }],
+    );
     let results = client.batch_revoke(&sender, &revoke_requests);
     assert_eq!(results.get(0).unwrap(), true);
 
@@ -965,10 +1056,10 @@ fn test_batch_revoke_partial_success() {
 
     let sender = Address::generate(&env);
     let attacker = Address::generate(&env);
-    let recipient_valid = Address::generate(&env);     // will succeed
+    let recipient_valid = Address::generate(&env); // will succeed
     let recipient_novesting = Address::generate(&env); // has no vesting at all
-    let recipient_vested = Address::generate(&env);    // already vested
-    let recipient_unauth = Address::generate(&env);    // vesting owned by different sender
+    let recipient_vested = Address::generate(&env); // already vested
+    let recipient_unauth = Address::generate(&env); // vesting owned by different sender
 
     let token_admin = Address::generate(&env);
     let (token, token_admin_client) = create_token_contract(&env, &token_admin);
@@ -1016,10 +1107,22 @@ fn test_batch_revoke_partial_success() {
     let revoke_requests = Vec::from_array(
         &env,
         [
-            RevokeRequest { recipient: recipient_valid.clone(), index: 0 },
-            RevokeRequest { recipient: recipient_novesting.clone(), index: 0 },
-            RevokeRequest { recipient: recipient_vested.clone(), index: 0 },
-            RevokeRequest { recipient: recipient_unauth.clone(), index: 0 },
+            RevokeRequest {
+                recipient: recipient_valid.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient_novesting.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient_vested.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient_unauth.clone(),
+                index: 0,
+            },
         ],
     );
 
@@ -1027,10 +1130,26 @@ fn test_batch_revoke_partial_success() {
     let results = client.batch_revoke(&sender, &revoke_requests);
 
     assert_eq!(results.len(), 4);
-    assert_eq!(results.get(0).unwrap(), false, "recipient_valid: timestamp == unlock_time so already vested");
-    assert_eq!(results.get(1).unwrap(), false, "recipient_novesting: no schedule exists");
-    assert_eq!(results.get(2).unwrap(), false, "recipient_vested: already past unlock");
-    assert_eq!(results.get(3).unwrap(), false, "recipient_unauth: sender not authorized");
+    assert_eq!(
+        results.get(0).unwrap(),
+        false,
+        "recipient_valid: timestamp == unlock_time so already vested"
+    );
+    assert_eq!(
+        results.get(1).unwrap(),
+        false,
+        "recipient_novesting: no schedule exists"
+    );
+    assert_eq!(
+        results.get(2).unwrap(),
+        false,
+        "recipient_vested: already past unlock"
+    );
+    assert_eq!(
+        results.get(3).unwrap(),
+        false,
+        "recipient_unauth: sender not authorized"
+    );
 
     // Confirm no funds were moved
     assert_eq!(token.balance(&sender), 700);
@@ -1077,18 +1196,39 @@ fn test_batch_revoke_mixed_valid_and_invalid() {
     let revoke_requests = Vec::from_array(
         &env,
         [
-            RevokeRequest { recipient: recipient_valid1.clone(), index: 0 },
-            RevokeRequest { recipient: recipient_novesting.clone(), index: 0 },
-            RevokeRequest { recipient: recipient_valid2.clone(), index: 0 },
+            RevokeRequest {
+                recipient: recipient_valid1.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient_novesting.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient_valid2.clone(),
+                index: 0,
+            },
         ],
     );
 
     let results = client.batch_revoke(&sender, &revoke_requests);
 
     assert_eq!(results.len(), 3);
-    assert_eq!(results.get(0).unwrap(), true,  "recipient_valid1 should succeed");
-    assert_eq!(results.get(1).unwrap(), false, "recipient_novesting has no schedule");
-    assert_eq!(results.get(2).unwrap(), true,  "recipient_valid2 should succeed");
+    assert_eq!(
+        results.get(0).unwrap(),
+        true,
+        "recipient_valid1 should succeed"
+    );
+    assert_eq!(
+        results.get(1).unwrap(),
+        false,
+        "recipient_novesting has no schedule"
+    );
+    assert_eq!(
+        results.get(2).unwrap(),
+        true,
+        "recipient_valid2 should succeed"
+    );
 
     // valid1 (150) and valid2 (250) returned to sender
     assert_eq!(token.balance(&sender), 1000);
@@ -1161,12 +1301,28 @@ fn test_claim_multi_token() {
     token_admin_a.mint(&sender, &1000);
     token_admin_b.mint(&sender, &1000);
 
-    env.ledger().with_mut(|li| { li.timestamp = 0; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = 0;
+    });
 
-    client.deposit(&sender, &token_a.address, &Vec::from_array(&env, [recipient.clone()]), &Vec::from_array(&env, [100]), &1000);
-    client.deposit(&sender, &token_b.address, &Vec::from_array(&env, [recipient.clone()]), &Vec::from_array(&env, [200]), &1000);
+    client.deposit(
+        &sender,
+        &token_a.address,
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [100]),
+        &1000,
+    );
+    client.deposit(
+        &sender,
+        &token_b.address,
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [200]),
+        &1000,
+    );
 
-    env.ledger().with_mut(|li| { li.timestamp = 1001; });
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1001;
+    });
 
     client.claim(&recipient);
 
@@ -1176,7 +1332,7 @@ fn test_claim_multi_token() {
     assert_eq!(token_b.balance(&contract_id), 0);
 }
 
-    // (Tests removed as revoke no longer takes a token argument)
+// (Tests removed as revoke no longer takes a token argument)
 
 // ─── Issue #196: Per-recipient schedule cap ──────────────────────────────────
 
@@ -1284,19 +1440,147 @@ fn test_batch_revoke_multiple_schedules_same_recipient() {
     let revoke_requests = Vec::from_array(
         &env,
         [
-            RevokeRequest { recipient: recipient.clone(), index: 0 },
-            RevokeRequest { recipient: recipient.clone(), index: 1 },
-            RevokeRequest { recipient: recipient.clone(), index: 2 },
+            RevokeRequest {
+                recipient: recipient.clone(),
+                index: 0,
+            },
+            RevokeRequest {
+                recipient: recipient.clone(),
+                index: 1,
+            },
+            RevokeRequest {
+                recipient: recipient.clone(),
+                index: 2,
+            },
         ],
     );
     let results = client.batch_revoke(&sender, &revoke_requests);
 
     // All three must succeed
-    assert_eq!(results.get(0).unwrap(), true, "schedule at index 0 must be revoked");
-    assert_eq!(results.get(1).unwrap(), true, "schedule at index 1 must be revoked");
-    assert_eq!(results.get(2).unwrap(), true, "schedule at index 2 must be revoked");
+    assert_eq!(
+        results.get(0).unwrap(),
+        true,
+        "schedule at index 0 must be revoked"
+    );
+    assert_eq!(
+        results.get(1).unwrap(),
+        true,
+        "schedule at index 1 must be revoked"
+    );
+    assert_eq!(
+        results.get(2).unwrap(),
+        true,
+        "schedule at index 2 must be revoked"
+    );
 
     // All 600 tokens returned to sender; contract is empty.
     assert_eq!(token.balance(&sender), 10000);
     assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_lazy_migration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let recipient = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Manually inject older Vec<VestingData> storage using Env's as_contract
+    let old_data = Vec::from_array(
+        &env,
+        [
+            VestingData {
+                amount: 100,
+                unlock_time: 1000,
+                sender: sender.clone(),
+                token: token.clone(),
+            },
+            VestingData {
+                amount: 200,
+                unlock_time: 2000,
+                sender: sender.clone(),
+                token: token.clone(),
+            },
+        ],
+    );
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vesting(recipient.clone()), &old_data);
+    });
+
+    // Calling get_vestings should trigger the lazy migration and return the two elements
+    let vestings = client.get_vestings(&recipient, &0, &10);
+    assert_eq!(vestings.len(), 2);
+    assert_eq!(vestings.get(0).unwrap().amount, 100);
+    assert_eq!(vestings.get(1).unwrap().amount, 200);
+
+    // After migration, the old key should be deleted and the new individual entry keys exist.
+    env.as_contract(&contract_id, || {
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .has(&DataKey::Vesting(recipient.clone())),
+            false
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, u32>(&DataKey::VestingCount(recipient.clone()))
+                .unwrap(),
+            2
+        );
+    });
+}
+
+#[test]
+fn test_get_vestings_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&sender, &10000);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 0;
+    });
+
+    for i in 0..5 {
+        client.deposit(
+            &sender,
+            &token.address,
+            &Vec::from_array(&env, [recipient.clone()]),
+            &Vec::from_array(&env, [10i128]),
+            &(1000 + i * 100),
+        );
+    }
+
+    // start=0, limit=2 => returns 2 elements
+    let page1 = client.get_vestings(&recipient, &0, &2);
+    assert_eq!(page1.len(), 2);
+
+    // start=2, limit=2 => returns 2 elements
+    let page2 = client.get_vestings(&recipient, &2, &2);
+    assert_eq!(page2.len(), 2);
+
+    // start=4, limit=2 => returns 1 element (only 1 left)
+    let page3 = client.get_vestings(&recipient, &4, &2);
+    assert_eq!(page3.len(), 1);
+
+    // start=5, limit=2 => returns 0 elements (out of bounds)
+    let page4 = client.get_vestings(&recipient, &5, &2);
+    assert_eq!(page4.len(), 0);
 }
