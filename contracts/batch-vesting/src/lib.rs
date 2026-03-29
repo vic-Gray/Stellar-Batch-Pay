@@ -119,13 +119,8 @@ impl BatchVestingContract {
         }
     }
 
-    fn is_authorized(env: &Env, caller: &Address, schedule_sender: &Address) -> bool {
-        let is_sender = caller == schedule_sender;
-        let is_admin = match Self::get_admin(env) {
-            Some(a) => caller == &a,
-            None => false,
-        };
-        is_sender || is_admin
+    fn is_authorized(_env: &Env, caller: &Address, schedule_sender: &Address) -> bool {
+        caller == schedule_sender
     }
 
     fn is_paused(env: &Env) -> bool {
@@ -379,7 +374,7 @@ impl BatchVestingContract {
     }
 
     /// Revoke an unvested schedule by index.
-    pub fn revoke(env: Env, caller: Address, recipient: Address, token: Address, index: u32) {
+    pub fn revoke(env: Env, caller: Address, recipient: Address, index: u32) {
         Self::panic_if_paused(&env);
         caller.require_auth();
 
@@ -400,10 +395,7 @@ impl BatchVestingContract {
             soroban_sdk::panic_with_error!(&env, VestingError::Unauthorized);
         }
 
-        // #194: reject if the caller provides a different token than what was deposited.
-        if vesting.token != token {
-            soroban_sdk::panic_with_error!(&env, VestingError::TokenMismatch);
-        }
+        let token = vesting.token.clone();
 
         let revoked_amount = vesting.amount;
         let sender = vesting.sender.clone();
@@ -428,7 +420,6 @@ impl BatchVestingContract {
         env: Env,
         caller: Address,
         requests: Vec<RevokeRequest>,
-        token: Address,
     ) -> Vec<bool> {
         Self::panic_if_paused(&env);
         caller.require_auth();
@@ -490,10 +481,7 @@ impl BatchVestingContract {
                 continue;
             }
 
-            // #194: skip (return false) if token doesn't match the stored schedule token.
-            if vesting.token != token {
-                continue;
-            }
+            let token = vesting.token.clone();
 
             let revoked_amount = vesting.amount;
             let sender = vesting.sender.clone();
@@ -518,11 +506,10 @@ impl BatchVestingContract {
         String::from_str(&env, "1.0.0")
     }
 
-    /// Claim all vested (unlocked) funds for the given token.
+    /// Claim all vested (unlocked) funds for the given recipient.
     ///
-    /// Only schedules whose stored token matches the provided token are
-    /// considered (#194).  Schedules for other tokens are left untouched.
-    pub fn claim(env: Env, recipient: Address, token: Address) {
+    /// All vested schedules are considered.
+    pub fn claim(env: Env, recipient: Address) {
         Self::panic_if_paused(&env);
         recipient.require_auth();
 
@@ -534,52 +521,43 @@ impl BatchVestingContract {
         let current_time = env.ledger().timestamp();
         let mut amount_to_transfer: i128 = 0;
 
-        // Collect claimable indices: unlocked AND matching the provided token.
+        // Collect claimable indices: unlocked.
         let mut claimable: Vec<u32> = Vec::new(&env);
         for i in 0..count {
             let vesting = Self::get_vesting(&env, &recipient, i);
-            // #194: only process schedules for the requested token.
-            if vesting.token != token {
-                Self::extend_ttl_vesting(&env, &recipient, i);
-                continue;
-            }
             if current_time >= vesting.unlock_time {
-                amount_to_transfer = amount_to_transfer.checked_add(vesting.amount).unwrap();
                 claimable.push_back(i);
             } else {
                 Self::extend_ttl_vesting(&env, &recipient, i);
             }
         }
 
-        if amount_to_transfer == 0 {
+        if claimable.len() == 0 {
             soroban_sdk::panic_with_error!(&env, VestingError::StillLocked);
         }
 
-        // Remove claimable entries in reverse index order to keep swap-removal consistent
+        // Process claimable entries
         let claimable_len = claimable.len();
         for k in (0..claimable_len).rev() {
             let idx = claimable.get(k).unwrap();
-            // Re-read current count since it shrinks with each removal
             let current_count = Self::get_count(&env, &recipient);
-            // The swap-remove may have moved a previously-unvisited entry into `idx`.
-            // Since we collected indices before any removal and iterate in reverse,
-            // indices >= current removal point are still valid.
             if idx < current_count {
+                let vesting = Self::get_vesting(&env, &recipient, idx);
+                let token_client = token::Client::new(&env, &vesting.token);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &recipient,
+                    &vesting.amount,
+                );
+
                 Self::remove_vesting(&env, &recipient, idx);
+
+                env.events().publish(
+                    (Symbol::new(&env, "VestingClaimed"), recipient.clone()),
+                    (vesting.amount,),
+                );
             }
         }
-
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &recipient,
-            &amount_to_transfer,
-        );
-
-        env.events().publish(
-            (Symbol::new(&env, "VestingClaimed"), recipient),
-            (amount_to_transfer,),
-        );
     }
 }
 mod test;
