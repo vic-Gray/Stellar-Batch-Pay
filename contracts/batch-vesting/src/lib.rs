@@ -20,7 +20,24 @@ pub enum DataKey {
     Vesting(Address, u32), // (recipient, index) — granular per-schedule key
     VestingCount(Address), // total number of schedules for a recipient
     Admin,
+    PendingAdmin,
     Paused,
+}
+
+#[soroban_sdk::contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum VestingError {
+    Paused = 1,
+    NotFound = 2,
+    LengthMismatch = 3,
+    InvalidUnlockTime = 4,
+    InvalidAmount = 5,
+    AdminAlreadySet = 6,
+    NotAdmin = 7,
+    AlreadyVested = 8,
+    Unauthorized = 9,
+    StillLocked = 10,
 }
 
 impl BatchVestingContract {
@@ -38,6 +55,32 @@ impl BatchVestingContract {
         env.storage().persistent().set(&DataKey::Admin, admin);
     }
 
+    fn remove_admin_internal(env: &Env) {
+        env.storage().persistent().remove(&DataKey::Admin);
+    }
+
+    fn get_pending_admin(env: &Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::PendingAdmin)
+    }
+
+    fn set_pending_admin_internal(env: &Env, admin: &Address) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, admin);
+    }
+
+    fn remove_pending_admin_internal(env: &Env) {
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+    }
+
+    fn require_current_admin(env: &Env, admin: &Address) {
+        admin.require_auth();
+        let stored_admin = Self::get_admin(env).expect("Admin must be set");
+        if admin != &stored_admin {
+            panic!("Only admin can perform this action");
+        }
+    }
+
     fn is_authorized(env: &Env, caller: &Address, schedule_sender: &Address) -> bool {
         let is_sender = caller == schedule_sender;
         let is_admin = match Self::get_admin(env) {
@@ -48,12 +91,15 @@ impl BatchVestingContract {
     }
 
     fn is_paused(env: &Env) -> bool {
-        env.storage().persistent().get(&DataKey::Paused).unwrap_or(false)
+        env.storage()
+            .persistent()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     fn panic_if_paused(env: &Env) {
         if Self::is_paused(env) {
-            panic!("Contract is paused");
+            soroban_sdk::panic_with_error!(env, VestingError::Paused);
         }
     }
 
@@ -82,7 +128,7 @@ impl BatchVestingContract {
         env.storage()
             .persistent()
             .get(&DataKey::Vesting(recipient.clone(), idx))
-            .unwrap_or_else(|| panic!("Vesting schedule not found"))
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::NotFound))
     }
 
     /// Removes a schedule by swapping it with the last entry (O(1) removal).
@@ -126,13 +172,23 @@ impl BatchVestingContract {
         sender.require_auth();
 
         if recipients.len() != amounts.len() {
-            panic!("Recipients and amounts length mismatch");
+            soroban_sdk::panic_with_error!(&env, VestingError::LengthMismatch);
         }
 
         Self::panic_if_batch_too_large(recipients.len());
 
         if unlock_time <= env.ledger().timestamp() {
-            panic!("Unlock time must be in the future");
+            soroban_sdk::panic_with_error!(&env, VestingError::InvalidUnlockTime);
+        }
+
+        for i in 0..recipients.len() {
+            let current = recipients.get(i).unwrap();
+            for j in (i + 1)..recipients.len() {
+                let other = recipients.get(j).unwrap();
+                if current == other {
+                    panic!("Duplicate recipients not allowed");
+                }
+            }
         }
 
         let mut total_amount: i128 = 0;
@@ -142,7 +198,7 @@ impl BatchVestingContract {
             let amount = amounts.get(i).unwrap();
 
             if amount <= 0 {
-                panic!("Amount must be positive");
+                soroban_sdk::panic_with_error!(&env, VestingError::InvalidAmount);
             }
 
             total_amount = total_amount.checked_add(amount).unwrap();
@@ -158,8 +214,8 @@ impl BatchVestingContract {
             );
 
             env.events().publish(
-                (Symbol::new(&env, "VestingDeposited"),),
-                (sender.clone(), recipient, amount, unlock_time),
+                (Symbol::new(&env, "VestingDeposited"), sender.clone(), recipient),
+                (amount, unlock_time),
             );
         }
 
@@ -171,7 +227,7 @@ impl BatchVestingContract {
     pub fn set_admin(env: Env, admin: Address) {
         admin.require_auth();
         if Self::get_admin(&env).is_some() {
-            panic!("Admin already set");
+            soroban_sdk::panic_with_error!(&env, VestingError::AdminAlreadySet);
         }
         Self::set_admin_internal(&env, &admin);
     }
@@ -181,30 +237,74 @@ impl BatchVestingContract {
         admin.require_auth();
         let stored_admin = Self::get_admin(&env).expect("Admin must be set to toggle pause");
         if admin != stored_admin {
-            panic!("Only admin can toggle pause");
-        }
-        env.storage().persistent().set(&DataKey::Paused, &paused);
-
+            soroban_sdk::panic_with_error!(&env, VestingError::NotAdmin);
+    /// Propose a new admin. Only the current admin can nominate a successor.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_current_admin(&env, &admin);
+        Self::set_pending_admin_internal(&env, &new_admin);
         env.events().publish(
-            (Symbol::new(&env, "PauseToggled"),),
-            (admin, paused),
+            (Symbol::new(&env, "AdminTransferProposed"),),
+            (admin, new_admin),
         );
     }
 
+    /// Accept a pending admin transfer.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        let pending_admin = Self::get_pending_admin(&env).expect("No admin transfer proposed");
+        if new_admin != pending_admin {
+            panic!("Only pending admin can accept transfer");
+        }
+
+        let previous_admin = Self::get_admin(&env).expect("Admin must be set");
+        Self::set_admin_internal(&env, &new_admin);
+        Self::remove_pending_admin_internal(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "AdminTransferred"),),
+            (previous_admin, new_admin),
+        );
+    }
+
+    /// Directly transfer admin to a new address. Requires authorization from the current admin.
+    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_current_admin(&env, &admin);
+        Self::set_admin_internal(&env, &new_admin);
+        Self::remove_pending_admin_internal(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "AdminTransferred"),),
+            (admin, new_admin),
+        );
+    }
+
+    /// Renounce admin rights and clear any in-flight transfer.
+    pub fn renounce_admin(env: Env, admin: Address) {
+        Self::require_current_admin(&env, &admin);
+        Self::remove_admin_internal(&env);
+        Self::remove_pending_admin_internal(&env);
+
+        env.events()
+            .publish((Symbol::new(&env, "AdminRenounced"),), admin);
+    }
+
+    /// Toggle contract pause state. Only admin can toggle pause.
+    pub fn toggle_pause(env: Env, admin: Address, paused: bool) {
+        Self::require_current_admin(&env, &admin);
+        env.storage().persistent().set(&DataKey::Paused, &paused);
+
+        env.events()
+            .publish((Symbol::new(&env, "PauseToggled"),), (admin, paused));
+    }
+
     /// Revoke unvested schedule by recipient/unlock time.
-    pub fn revoke(
-        env: Env,
-        caller: Address,
-        recipient: Address,
-        token: Address,
-        unlock_time: u64,
-    ) {
+    pub fn revoke(env: Env, caller: Address, recipient: Address, token: Address, unlock_time: u64) {
         Self::panic_if_paused(&env);
         caller.require_auth();
 
         let count = Self::get_count(&env, &recipient);
         if count == 0 {
-            panic!("No vesting found for recipient");
+            soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
         }
 
         let current_time = env.ledger().timestamp();
@@ -216,10 +316,10 @@ impl BatchVestingContract {
             let vesting = Self::get_vesting(&env, &recipient, i);
             if vesting.unlock_time == unlock_time {
                 if current_time >= vesting.unlock_time {
-                    panic!("Cannot revoke already vested funds");
+                    soroban_sdk::panic_with_error!(&env, VestingError::AlreadyVested);
                 }
                 if !Self::is_authorized(&env, &caller, &vesting.sender) {
-                    panic!("Unauthorized revoke attempt");
+                    soroban_sdk::panic_with_error!(&env, VestingError::Unauthorized);
                 }
                 revoked_amount = vesting.amount;
                 schedule_sender = Some(vesting.sender.clone());
@@ -229,7 +329,7 @@ impl BatchVestingContract {
         }
 
         if found_idx.is_none() {
-            panic!("Vesting schedule not found");
+            soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
         }
 
         Self::remove_vesting(&env, &recipient, found_idx.unwrap());
@@ -239,8 +339,8 @@ impl BatchVestingContract {
         token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
 
         env.events().publish(
-            (Symbol::new(&env, "VestingRevoked"),),
-            (recipient, sender, revoked_amount, unlock_time),
+            (Symbol::new(&env, "VestingRevoked"), recipient, sender),
+            (revoked_amount, unlock_time),
         );
     }
 
@@ -263,7 +363,7 @@ impl BatchVestingContract {
 
             let count = Self::get_count(&env, &recipient);
             if count == 0 {
-                panic!("No vesting found for recipient");
+                soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
             }
 
             let mut found_idx: Option<u32> = None;
@@ -274,10 +374,10 @@ impl BatchVestingContract {
                 let vesting = Self::get_vesting(&env, &recipient, j);
                 if vesting.unlock_time == unlock_time {
                     if current_time >= vesting.unlock_time {
-                        panic!("Cannot revoke already vested funds");
+                        soroban_sdk::panic_with_error!(&env, VestingError::AlreadyVested);
                     }
                     if !Self::is_authorized(&env, &caller, &vesting.sender) {
-                        panic!("Unauthorized revoke attempt");
+                        soroban_sdk::panic_with_error!(&env, VestingError::Unauthorized);
                     }
                     revoked_amount = vesting.amount;
                     schedule_sender = Some(vesting.sender.clone());
@@ -287,7 +387,7 @@ impl BatchVestingContract {
             }
 
             if found_idx.is_none() {
-                panic!("Vesting schedule not found");
+                soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
             }
 
             Self::remove_vesting(&env, &recipient, found_idx.unwrap());
@@ -297,8 +397,8 @@ impl BatchVestingContract {
             token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
 
             env.events().publish(
-                (Symbol::new(&env, "VestingRevoked"),),
-                (recipient, sender, revoked_amount, unlock_time),
+                (Symbol::new(&env, "VestingRevoked"), recipient, sender),
+                (revoked_amount, unlock_time),
             );
         }
     }
@@ -315,7 +415,7 @@ impl BatchVestingContract {
 
         let count = Self::get_count(&env, &recipient);
         if count == 0 {
-            panic!("No vesting found for recipient");
+            soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
         }
 
         let current_time = env.ledger().timestamp();
@@ -332,7 +432,7 @@ impl BatchVestingContract {
         }
 
         if amount_to_transfer == 0 {
-            panic!("Vesting is currently locked");
+            soroban_sdk::panic_with_error!(&env, VestingError::StillLocked);
         }
 
         // Remove claimable entries in reverse index order to keep swap-removal consistent
@@ -350,11 +450,15 @@ impl BatchVestingContract {
         }
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount_to_transfer);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &amount_to_transfer,
+        );
 
         env.events().publish(
-            (Symbol::new(&env, "VestingClaimed"),),
-            (recipient, amount_to_transfer),
+            (Symbol::new(&env, "VestingClaimed"), recipient),
+            (amount_to_transfer,),
         );
     }
 }
