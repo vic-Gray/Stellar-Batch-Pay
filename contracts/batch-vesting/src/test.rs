@@ -115,7 +115,7 @@ fn test_revoke_by_sender() {
         li.timestamp = 500;
     });
 
-    client.revoke(&sender, &recipient, &token.address, &unlock_time);
+    client.revoke(&sender, &recipient, &token.address, &0);
 
     assert_eq!(token.balance(&sender), 1000);
     assert_eq!(token.balance(&contract_id), 0);
@@ -185,7 +185,7 @@ fn test_revoke_by_admin() {
         li.timestamp = 500;
     });
 
-    client.revoke(&admin, &recipient, &token.address, &unlock_time);
+    client.revoke(&admin, &recipient, &token.address, &0);
 
     assert_eq!(token.balance(&sender), 1000);
     assert_eq!(token.balance(&contract_id), 0);
@@ -222,7 +222,7 @@ fn test_revoke_unauthorized() {
         li.timestamp = 500;
     });
 
-    client.revoke(&attacker, &recipient, &token.address, &unlock_time);
+    client.revoke(&attacker, &recipient, &token.address, &0);
 }
 
 #[test]
@@ -568,8 +568,11 @@ fn test_batch_revoke_by_sender() {
         li.timestamp = 500;
     });
 
-    let revoke_recipients = Vec::from_array(&env, [recipient1.clone(), recipient2.clone()]);
-    let results = client.batch_revoke(&sender, &revoke_recipients, &token.address, &unlock_time);
+    let revoke_requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient1.clone(), index: 0 },
+        RevokeRequest { recipient: recipient2.clone(), index: 0 }
+    ]);
+    let results = client.batch_revoke(&sender, &revoke_requests, &token.address);
 
     assert_eq!(results.get(0).unwrap(), true);
     assert_eq!(results.get(1).unwrap(), true);
@@ -673,8 +676,11 @@ fn test_batch_revoke_multiple_senders() {
     });
 
     // Admin revokes both in a batch
-    let recipients = Vec::from_array(&env, [recipient1.clone(), recipient2.clone()]);
-    let results = client.batch_revoke(&admin, &recipients, &token.address, &unlock_time);
+    let revoke_requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient1.clone(), index: 0 },
+        RevokeRequest { recipient: recipient2.clone(), index: 0 }
+    ]);
+    let results = client.batch_revoke(&admin, &revoke_requests, &token.address);
 
     // Funds should go back to respective senders
     assert_eq!(results.get(0).unwrap(), true);
@@ -717,7 +723,12 @@ fn test_batch_revoke_unauthorized() {
     });
 
     // Attacker is not sender or admin, so both entries fail
-    let results = client.batch_revoke(&attacker, &recipients, &token.address, &unlock_time);
+    let revoke_requests = Vec::from_array(&env, [
+        RevokeRequest { recipient: recipient1.clone(), index: 0 },
+        RevokeRequest { recipient: recipient2.clone(), index: 0 }
+    ]);
+    // Attacker is not sender or admin, so both entries fail
+    let results = client.batch_revoke(&attacker, &revoke_requests, &token.address);
     assert_eq!(results.get(0).unwrap(), false, "Unauthorized attacker should fail for recipient1");
     assert_eq!(results.get(1).unwrap(), false, "Unauthorized attacker should fail for recipient2");
     // Funds remain untouched
