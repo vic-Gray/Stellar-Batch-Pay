@@ -15,12 +15,19 @@ pub struct BatchVestingContract;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchInfo {
+    pub sender: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VestingData {
     pub total_amount: i128,
     pub released_amount: i128,
     pub start_time: u64,
     pub end_time: u64,
-    pub sender: Address,
+    pub batch_id: u32,
     /// #194: Store the token address so claim/revoke can validate it matches
     /// the token that was originally deposited, preventing cross-token exploits.
     pub token: Address,
@@ -53,6 +60,8 @@ pub enum DataKey {
     /// DEPRECATED: Old Vec<VestingData> storage key for backward compatibility
     Vesting(Address),
     Config,
+    BatchInfo(u32),             // #209: batch metadata indexed by batch_id
+    BatchCounter,               // #209: counter for next batch_id
 }
 
 #[soroban_sdk::contracterror]
@@ -183,14 +192,19 @@ impl BatchVestingContract {
             let count = old_vestings.len();
             for i in 0..count {
                 let legacy_vesting = old_vestings.get(i).unwrap();
-                // Map legacy VestingData to new structure
-                let vesting = VestingData {
-                    total_amount: legacy_vesting.amount,
-                    released_amount: 0,
-                    start_time: env.ledger().timestamp(), // Best effort for legacy
-                    end_time: legacy_vesting.unlock_time,
-                    sender: legacy_vesting.sender.clone(),
-                    token: legacy_vesting.token.clone(),
+                // Ensure batch_id is set, use default if needed
+                let vesting = if legacy_vesting.batch_id == 0 {
+                    // Old data without batch_id; use default (batch_id 0 is reserved)
+                    VestingData {
+                        total_amount: legacy_vesting.total_amount,
+                        released_amount: legacy_vesting.released_amount,
+                        start_time: legacy_vesting.start_time,
+                        end_time: legacy_vesting.end_time,
+                        batch_id: 0,
+                        token: legacy_vesting.token.clone(),
+                    }
+                } else {
+                    legacy_vesting.clone()
                 };
                 Self::set_vesting(env, recipient, i, &vesting);
             }
@@ -310,6 +324,47 @@ impl BatchVestingContract {
             .extend_ttl(&DataKey::Paused, BUMP_THRESHOLD, BUMP_EXTEND_TO);
     }
 
+    fn get_next_batch_id(env: &Env) -> u32 {
+        let current = env.storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::BatchCounter)
+            .unwrap_or(0u32);
+        current
+    }
+
+    fn increment_batch_id(env: &Env) {
+        let current = Self::get_next_batch_id(env);
+        let next = current
+            .checked_add(1)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow));
+        env.storage()
+            .persistent()
+            .set(&DataKey::BatchCounter, &next);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BatchCounter,
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
+    }
+
+    fn set_batch_info(env: &Env, batch_id: u32, info: &BatchInfo) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::BatchInfo(batch_id), info);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BatchInfo(batch_id),
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
+    }
+
+    fn get_batch_info(env: &Env, batch_id: u32) -> BatchInfo {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BatchInfo(batch_id))
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::NotFound))
+    }
+
     fn extend_ttl_vesting(env: &Env, recipient: &Address, idx: u32) {
         env.storage().persistent().extend_ttl(
             &DataKey::VestingEntry(recipient.clone(), idx),
@@ -326,11 +381,13 @@ impl BatchVestingContract {
 
 #[contractimpl]
 impl BatchVestingContract {
-    /// Initialize a batch of vestings.
+    /// Initialize a batch of vestings with support for multiple tokens.
+    /// #210: Accept Vec<Token> to support multiple assets in a single batch.
+    /// Tokens vector must match recipients length (one token per recipient).
     pub fn deposit(
         env: Env,
         sender: Address,
-        token: Address,
+        tokens: Vec<Address>,
         recipients: Vec<Address>,
         amounts: Vec<i128>,
         start_time: u64,
@@ -340,6 +397,10 @@ impl BatchVestingContract {
         sender.require_auth();
 
         if recipients.len() != amounts.len() {
+            soroban_sdk::panic_with_error!(&env, VestingError::LengthMismatch);
+        }
+
+        if recipients.len() != tokens.len() {
             soroban_sdk::panic_with_error!(&env, VestingError::LengthMismatch);
         }
 
@@ -353,11 +414,22 @@ impl BatchVestingContract {
             soroban_sdk::panic_with_error!(&env, VestingError::InvalidUnlockTime);
         }
 
-        let mut total_amount: i128 = 0;
+        // #209: Create batch info entry for this deposit
+        let batch_id = Self::get_next_batch_id(&env);
+        let batch_info = BatchInfo {
+            sender: sender.clone(),
+            timestamp: env.ledger().timestamp(),
+        };
+        Self::set_batch_info(&env, batch_id, &batch_info);
+        Self::increment_batch_id(&env);
+
+        // Track total transfers per token (#210)
+        let mut token_transfers: Vec<(Address, i128)> = Vec::new(&env);
 
         for i in 0..recipients.len() {
             let recipient = recipients.get(i).unwrap();
             let amount = amounts.get(i).unwrap();
+            let token = tokens.get(i).unwrap();
 
             if amount <= 0 {
                 soroban_sdk::panic_with_error!(&env, VestingError::InvalidAmount);
@@ -370,10 +442,6 @@ impl BatchVestingContract {
                 soroban_sdk::panic_with_error!(&env, VestingError::ScheduleLimitExceeded);
             }
 
-            total_amount = total_amount
-                .checked_add(amount)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, VestingError::Overflow));
-
             let idx = Self::push_vesting(
                 &env,
                 &recipient,
@@ -382,8 +450,8 @@ impl BatchVestingContract {
                     released_amount: 0,
                     start_time,
                     end_time,
-                    sender: sender.clone(),
-                    token: token.clone(), // #194: bind token to this schedule
+                    batch_id,                 // #209: use batch_id instead of sender
+                    token: token.clone(),     // #194: bind token to this schedule
                 },
             );
             Self::extend_ttl_vesting(&env, &recipient, idx);
@@ -392,10 +460,28 @@ impl BatchVestingContract {
                 (Symbol::new(&env, "VestingDeposited"), sender.clone(), recipient),
                 (amount, start_time, end_time, token.clone()),
             );
+
+            // #210: Accumulate token transfers for batch processing
+            let mut found = false;
+            for j in 0..token_transfers.len() {
+                let (t, amt) = token_transfers.get(j).unwrap();
+                if t == token {
+                    token_transfers.set(j, (t.clone(), amt + amount));
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                token_transfers.push_back((token.clone(), amount));
+            }
         }
 
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&sender, &env.current_contract_address(), &total_amount);
+        // #210: Execute all token transfers
+        for i in 0..token_transfers.len() {
+            let (token, total_amount) = token_transfers.get(i).unwrap();
+            let token_client = token::Client::new(&env, &token);
+            token_client.transfer(&sender, &env.current_contract_address(), &total_amount);
+        }
     }
 
     /// Set admin for the contract. Only the very first call can set the admin.
@@ -504,13 +590,17 @@ impl BatchVestingContract {
 
         let vesting = Self::get_vesting(&env, &recipient, index);
         let current_time = env.ledger().timestamp();
-        
+
         // If it's already fully vested, it cannot be revoked.
         if current_time >= vesting.end_time {
             soroban_sdk::panic_with_error!(&env, VestingError::AlreadyVested);
         }
 
-        if !Self::is_authorized(&env, &caller, &vesting.sender) {
+        // #209: Get sender from BatchInfo instead of VestingData
+        let batch_info = Self::get_batch_info(&env, vesting.batch_id);
+        let sender = batch_info.sender.clone();
+
+        if !Self::is_authorized(&env, &caller, &sender) {
             soroban_sdk::panic_with_error!(&env, VestingError::Unauthorized);
         }
 
@@ -523,7 +613,7 @@ impl BatchVestingContract {
         } else {
             0
         };
-        
+
         let vested_amount = if elapsed >= duration as i128 {
             vesting.total_amount
         } else {
@@ -531,8 +621,7 @@ impl BatchVestingContract {
         };
 
         let revoked_amount = vesting.total_amount - vested_amount;
-        let sender = vesting.sender.clone();
-        
+
         // Final vested portion for recipient if they haven't claimed it yet
         let pending_vested = vested_amount - vesting.released_amount;
 
@@ -542,7 +631,7 @@ impl BatchVestingContract {
         if revoked_amount > 0 {
             token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
         }
-        
+
         if pending_vested > 0 {
             token_client.transfer(&env.current_contract_address(), &recipient, &pending_vested);
         }
@@ -615,12 +704,15 @@ impl BatchVestingContract {
                 continue;
             }
 
-            if !Self::is_authorized(&env, &caller, &vesting.sender) {
+            // #209: Get sender from BatchInfo instead of VestingData
+            let batch_info = Self::get_batch_info(&env, vesting.batch_id);
+            let sender = batch_info.sender.clone();
+
+            if !Self::is_authorized(&env, &caller, &sender) {
                 continue;
             }
 
             let token = vesting.token.clone();
-            let sender = vesting.sender.clone();
 
             let duration = (vesting.end_time - vesting.start_time) as i128;
             let elapsed = if current_time > vesting.start_time {
