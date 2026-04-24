@@ -339,7 +339,7 @@ fn test_deposit_unauthorized() {
     let unlock_time = 1000;
 
     // This should fail because sender hasn't authorized the call
-    client.deposit(&sender, &token, &recipients, &amounts, &unlock_time);
+    client.deposit(&sender, &token, &recipients, &amounts, &0, &unlock_time);
 }
 
 #[test]
@@ -407,9 +407,10 @@ fn test_events_emission() {
             if topic == deposit_symbol {
                 let evt_sender: Address = topics.get(1).unwrap().into_val(&env);
                 let evt_recipient: Address = topics.get(2).unwrap().into_val(&env);
-                let (evt_amount, evt_unlock, evt_token): (i128, u64, Address) = data.into_val(&env);
+                let (evt_amount, evt_start, evt_end, evt_token): (i128, u64, u64, Address) = data.into_val(&env);
                 assert_eq!(evt_sender, sender);
-                assert_eq!(evt_unlock, unlock_time);
+                assert_eq!(evt_start, 0);
+                assert_eq!(evt_end, unlock_time);
                 assert_eq!(evt_token, token.address);
                 if evt_recipient == recipient1 {
                     assert_eq!(evt_amount, 100);
@@ -620,7 +621,7 @@ fn test_batch_revoke_by_admin_fails() {
     env.ledger().with_mut(|li| {
         li.timestamp = 0;
     });
-    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &0, &unlock_time);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 500;
@@ -754,7 +755,7 @@ fn test_batch_revoke_unauthorized() {
         li.timestamp = 0;
     });
 
-    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &0, &unlock_time);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 500;
@@ -813,7 +814,7 @@ fn test_batch_revoke_already_vested() {
         li.timestamp = 0;
     });
 
-    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &0, &unlock_time);
 
     // Advance past unlock_time — both schedules are already vested
     env.ledger().with_mut(|li| {
@@ -915,7 +916,7 @@ fn test_batch_revoke_events_emission() {
         li.timestamp = 0;
     });
 
-    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &0, &unlock_time);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 500;
@@ -948,9 +949,10 @@ fn test_batch_revoke_events_emission() {
             if topic == revoke_symbol {
                 let evt_recipient: Address = topics.get(1).unwrap().into_val(&env);
                 let evt_sender: Address = topics.get(2).unwrap().into_val(&env);
-                let (evt_amount, evt_unlock, evt_token): (i128, u64, Address) = data.into_val(&env);
+                let (evt_amount, evt_pending, evt_token): (i128, i128, Address) = data.into_val(&env);
                 assert_eq!(evt_sender, sender);
-                assert_eq!(evt_unlock, unlock_time);
+                // At t=500, unlock=1000, 50% is vested, 50% revoked
+                assert_eq!(evt_amount, 50); // revoked amount (assuming total was 100)
                 assert_eq!(evt_token, token.address);
                 if evt_recipient == recipient1 {
                     assert_eq!(evt_amount, 100);
@@ -996,7 +998,7 @@ fn test_batch_revoke_partial_recipients() {
         li.timestamp = 0;
     });
 
-    client.deposit(&sender, &token.address, &recipients, &amounts, &unlock_time);
+    client.deposit(&sender, &token.address, &recipients, &amounts, &0, &unlock_time);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 500;
@@ -1759,4 +1761,55 @@ fn test_linear_vesting_partial_claims() {
     // Schedule should be removed
     let vestings = client.get_vestings(&recipient, &0, &10);
     assert_eq!(vestings.len(), 0);
+}
+
+#[test]
+fn test_set_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    let new_config = Config {
+        max_batch_size: 50,
+        max_schedules_per_recipient: 5,
+    };
+
+    client.set_config(&admin, &new_config);
+
+    // Verify ConfigUpdated event
+    let events = env.events().all();
+    let last_event = events.get(events.len() - 1).unwrap();
+    assert_eq!(last_event.1.get(0).unwrap(), Symbol::new(&env, "ConfigUpdated").into_val(&env));
+    assert_eq!(last_event.2, (50u32, 5u32).into_val(&env));
+}
+
+#[test]
+#[should_panic(expected = "Batch size exceeds max_batch_size")]
+fn test_config_enforcement() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.set_admin(&admin);
+
+    client.set_config(&admin, &Config {
+        max_batch_size: 2,
+        max_schedules_per_recipient: 10,
+    });
+
+    let sender = Address::generate(&env);
+    let recipients = Vec::from_array(&env, [Address::generate(&env), Address::generate(&env), Address::generate(&env)]);
+    let amounts = Vec::from_array(&env, [100i128, 100i128, 100i128]);
+    let token = Address::generate(&env);
+
+    // Should panic because batch size is 3 but limit is 2
+    client.deposit(&sender, &token, &recipients, &amounts, &0, &2000);
 }

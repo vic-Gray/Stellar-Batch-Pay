@@ -34,6 +34,13 @@ pub struct RevokeRequest {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Config {
+    pub max_batch_size: u32,
+    pub max_schedules_per_recipient: u32,
+}
+
+#[contracttype]
 pub enum DataKey {
     VestingEntry(Address, u32), // (recipient, index) — granular per-schedule key
     VestingCount(Address),      // total number of schedules for a recipient
@@ -45,6 +52,7 @@ pub enum DataKey {
     AdminInitialized,
     /// DEPRECATED: Old Vec<VestingData> storage key for backward compatibility
     Vesting(Address),
+    Config,
 }
 
 #[soroban_sdk::contracterror]
@@ -68,10 +76,30 @@ pub enum VestingError {
 }
 
 impl BatchVestingContract {
-    fn panic_if_batch_too_large(batch_len: u32) {
-        if batch_len > MAX_BATCH_SIZE {
-            panic!("Batch size exceeds MAX_BATCH_SIZE");
+    fn panic_if_batch_too_large(env: &Env, batch_len: u32) {
+        let config = Self::get_config(env);
+        if batch_len > config.max_batch_size {
+            panic!("Batch size exceeds max_batch_size");
         }
+    }
+
+    fn get_config(env: &Env) -> Config {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Config)
+            .unwrap_or(Config {
+                max_batch_size: MAX_BATCH_SIZE,
+                max_schedules_per_recipient: MAX_SCHEDULES_PER_RECIPIENT,
+            })
+    }
+
+    fn set_config_internal(env: &Env, config: &Config) {
+        env.storage().persistent().set(&DataKey::Config, config);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Config,
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
     }
 
     fn get_admin(env: &Env) -> Option<Address> {
@@ -262,6 +290,11 @@ impl BatchVestingContract {
                 BUMP_EXTEND_TO,
             );
         }
+        if env.storage().persistent().has(&DataKey::Config) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Config, BUMP_THRESHOLD, BUMP_EXTEND_TO);
+        }
     }
 
     fn extend_ttl_paused(env: &Env) {
@@ -303,7 +336,7 @@ impl BatchVestingContract {
             soroban_sdk::panic_with_error!(&env, VestingError::LengthMismatch);
         }
 
-        Self::panic_if_batch_too_large(recipients.len());
+        Self::panic_if_batch_too_large(&env, recipients.len());
 
         if end_time <= start_time {
             soroban_sdk::panic_with_error!(&env, VestingError::InvalidUnlockTime);
@@ -325,7 +358,8 @@ impl BatchVestingContract {
 
             // #196: reject deposit if recipient is already at the schedule cap.
             let current_count = Self::get_vesting_count(&env, &recipient);
-            if current_count >= MAX_SCHEDULES_PER_RECIPIENT {
+            let config = Self::get_config(&env);
+            if current_count >= config.max_schedules_per_recipient {
                 soroban_sdk::panic_with_error!(&env, VestingError::ScheduleLimitExceeded);
             }
 
@@ -434,6 +468,17 @@ impl BatchVestingContract {
             .publish((Symbol::new(&env, "PauseToggled"),), (admin, paused));
     }
 
+    /// Update contract configuration. Only admin can call this.
+    pub fn set_config(env: Env, admin: Address, config: Config) {
+        Self::require_current_admin(&env, &admin);
+        Self::set_config_internal(&env, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "ConfigUpdated"),),
+            (config.max_batch_size, config.max_schedules_per_recipient),
+        );
+    }
+
     /// Revoke an unvested schedule by index.
     pub fn revoke(env: Env, caller: Address, recipient: Address, index: u32) {
         Self::panic_if_paused(&env);
@@ -503,7 +548,7 @@ impl BatchVestingContract {
     pub fn batch_revoke(env: Env, caller: Address, requests: Vec<RevokeRequest>) -> Vec<bool> {
         Self::panic_if_paused(&env);
         caller.require_auth();
-        Self::panic_if_batch_too_large(requests.len());
+        Self::panic_if_batch_too_large(&env, requests.len());
 
         let n = requests.len();
         if n == 0 {
