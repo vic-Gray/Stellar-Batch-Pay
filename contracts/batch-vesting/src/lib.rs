@@ -65,6 +65,8 @@ pub enum VestingError {
     TokenMismatch = 11,
     /// #196: Recipient has reached the maximum number of allowed vesting schedules.
     ScheduleLimitExceeded = 12,
+    /// Arithmetic operation resulted in an overflow.
+    Overflow = 13,
 }
 
 impl BatchVestingContract {
@@ -117,9 +119,11 @@ impl BatchVestingContract {
 
     fn require_current_admin(env: &Env, admin: &Address) {
         admin.require_auth();
-        let stored_admin = Self::get_admin(env).expect("Admin must be set");
+        let stored_admin = Self::get_admin(env).unwrap_or_else(|| {
+            soroban_sdk::panic_with_error!(env, VestingError::NotAdmin)
+        });
         if admin != &stored_admin {
-            panic!("Only admin can perform this action");
+            soroban_sdk::panic_with_error!(env, VestingError::NotAdmin);
         }
     }
 
@@ -197,7 +201,10 @@ impl BatchVestingContract {
     fn push_vesting(env: &Env, recipient: &Address, data: &VestingData) -> u32 {
         let idx = Self::get_vesting_count(env, recipient);
         Self::set_vesting(env, recipient, idx, data);
-        Self::set_vesting_count(env, recipient, idx + 1);
+        let next_count = idx
+            .checked_add(1)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow));
+        Self::set_vesting_count(env, recipient, next_count);
         idx
     }
 
@@ -329,7 +336,9 @@ impl BatchVestingContract {
                 soroban_sdk::panic_with_error!(&env, VestingError::ScheduleLimitExceeded);
             }
 
-            total_amount = total_amount.checked_add(amount).unwrap();
+            total_amount = total_amount
+                .checked_add(amount)
+                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, VestingError::Overflow));
 
             let idx = Self::push_vesting(
                 &env,
@@ -385,12 +394,16 @@ impl BatchVestingContract {
     /// Accept a pending admin transfer.
     pub fn accept_admin(env: Env, new_admin: Address) {
         new_admin.require_auth();
-        let pending_admin = Self::get_pending_admin(&env).expect("No admin transfer proposed");
+        let pending_admin = Self::get_pending_admin(&env).unwrap_or_else(|| {
+            soroban_sdk::panic_with_error!(&env, VestingError::Unauthorized)
+        });
         if new_admin != pending_admin {
-            panic!("Only pending admin can accept transfer");
+            soroban_sdk::panic_with_error!(&env, VestingError::Unauthorized);
         }
 
-        let previous_admin = Self::get_admin(&env).expect("Admin must be set");
+        let previous_admin = Self::get_admin(&env).unwrap_or_else(|| {
+            soroban_sdk::panic_with_error!(&env, VestingError::NotAdmin)
+        });
         Self::set_admin_internal(&env, &new_admin);
         Self::remove_pending_admin_internal(&env);
         Self::extend_ttl_admin(&env);
@@ -674,7 +687,10 @@ impl BatchVestingContract {
             return result_vec;
         }
 
-        let end = core::cmp::min(start + limit, count);
+        let end = start
+            .checked_add(limit)
+            .unwrap_or(count)
+            .min(count);
         for i in start..end {
             result_vec.push_back(Self::get_vesting(&env, &recipient, i));
         }
