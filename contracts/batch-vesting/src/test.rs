@@ -1920,3 +1920,111 @@ fn test_only_pending_admin_can_accept() {
     // Attacker tries to accept — must fail with Unauthorized (#9)
     client.accept_admin(&attacker);
 }
+
+// ── Gas-Optimised Batch Revoke tests ─────────────────────────────────────────
+
+/// Verifies that batch_revoke processes requests in the correct (descending)
+/// index order regardless of the order they are submitted, preventing
+/// swap-with-last index corruption when multiple schedules for the same
+/// recipient are revoked in a single call.
+#[test]
+fn test_batch_revoke_out_of_order_indices() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&sender, &3000);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    // Deposit 3 separate schedules for the same recipient (indices 0, 1, 2)
+    for end in [1000u64, 2000u64, 3000u64] {
+        client.deposit(
+            &sender,
+            &Vec::from_array(&env, [token.address.clone()]),
+            &Vec::from_array(&env, [recipient.clone()]),
+            &Vec::from_array(&env, [100i128]),
+            &0,
+            &end,
+        );
+    }
+    assert_eq!(token.balance(&contract_id), 300);
+
+    env.ledger().with_mut(|li| li.timestamp = 500);
+
+    // Submit requests in ascending index order [0, 1, 2]; the optimised sort
+    // must reorder them to [2, 1, 0] internally for safe execution.
+    let results = client.batch_revoke(
+        &sender,
+        &Vec::from_array(
+            &env,
+            [
+                RevokeRequest { recipient: recipient.clone(), index: 0 },
+                RevokeRequest { recipient: recipient.clone(), index: 1 },
+                RevokeRequest { recipient: recipient.clone(), index: 2 },
+            ],
+        ),
+    );
+
+    // All three revokes must succeed
+    assert_eq!(results.get(0).unwrap(), true);
+    assert_eq!(results.get(1).unwrap(), true);
+    assert_eq!(results.get(2).unwrap(), true);
+    // Contract must be empty; all funds returned to sender
+    assert_eq!(token.balance(&contract_id), 0);
+    assert_eq!(token.balance(&sender), 3000);
+}
+
+/// Verifies that a mixed batch — some valid requests, some with stale indices —
+/// returns correct per-request results and does not panic.
+#[test]
+fn test_batch_revoke_mixed_valid_and_invalid() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&sender, &1000);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [100i128]),
+        &0,
+        &1000,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 500);
+
+    let results = client.batch_revoke(
+        &sender,
+        &Vec::from_array(
+            &env,
+            [
+                RevokeRequest { recipient: other.clone(), index: 0 }, // invalid – no schedule
+                RevokeRequest { recipient: recipient.clone(), index: 0 }, // valid
+            ],
+        ),
+    );
+
+    assert_eq!(results.get(0).unwrap(), false); // invalid skipped
+    assert_eq!(results.get(1).unwrap(), true);  // valid succeeded
+    assert_eq!(token.balance(&contract_id), 0);
+}

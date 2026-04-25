@@ -635,6 +635,13 @@ impl BatchVestingContract {
     /// Requests are processed in descending index order so that swap-with-last
     /// removal does not corrupt the indices of pending requests that target the
     /// same recipient (#198).
+    ///
+    /// #GAS: Sorting uses insertion sort instead of bubble sort.
+    /// Insertion sort performs at most (N-1) comparisons per element and writes
+    /// only the strictly necessary positions, cutting vector `set()` calls by
+    /// ~50 % on average compared to bubble sort.  This lowers instruction-meter
+    /// costs in gas-sensitive Soroban environments while preserving the
+    /// descending-index ordering required for safe swap-with-last removal.
     pub fn batch_revoke(env: Env, caller: Address, requests: Vec<RevokeRequest>) -> Vec<bool> {
         Self::panic_if_paused(&env);
         caller.require_auth();
@@ -647,26 +654,32 @@ impl BatchVestingContract {
 
         let current_time = env.ledger().timestamp();
 
-        // #198: Build a processing order sorted by request.index descending via
-        // bubble sort (bounded by MAX_BATCH_SIZE = 100, so O(n²) is acceptable).
-        // Processing higher indices first guarantees that the swap-with-last
-        // removal of entry i never invalidates a later removal of entry j < i
-        // for the same recipient.
+        // Build a process_order array [0, 1, …, n-1] then sort it in
+        // DESCENDING order of the vesting index of each request.
+        // Insertion sort: O(N²) worst-case but only ≈N²/4 writes on average
+        // (vs ≈3N²/4 writes for bubble sort), significantly cheaper in a
+        // metered environment where each Vec::set() costs gas.
         let mut process_order: Vec<u32> = Vec::new(&env);
         for k in 0..n {
             process_order.push_back(k);
         }
-        for _pass in 0..n {
-            for j in 0..(n - 1) {
-                let a = process_order.get(j).unwrap();
-                let b = process_order.get(j + 1).unwrap();
-                let idx_a = requests.get(a).unwrap().index;
-                let idx_b = requests.get(b).unwrap().index;
-                if idx_a < idx_b {
-                    process_order.set(j, b);
-                    process_order.set(j + 1, a);
+        // Insertion sort in descending order of request.index
+        for i in 1..n {
+            let key = process_order.get(i).unwrap();
+            let key_idx = requests.get(key).unwrap().index;
+            let mut j = i;
+            while j > 0 {
+                let prev = process_order.get(j - 1).unwrap();
+                let prev_idx = requests.get(prev).unwrap().index;
+                if prev_idx < key_idx {
+                    // Shift prev one position to the right
+                    process_order.set(j, prev);
+                    j -= 1;
+                } else {
+                    break;
                 }
             }
+            process_order.set(j, key);
         }
 
         // Pre-allocate results in original request order (default false).
