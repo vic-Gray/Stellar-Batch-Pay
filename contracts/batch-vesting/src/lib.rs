@@ -10,6 +10,11 @@ const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP_THRESHOLD: u32 = 7 * DAY_IN_LEDGERS;
 const BUMP_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
 
+/// #228: Granular pause masks
+const PAUSE_DEPOSIT: u32 = 1 << 0;
+const PAUSE_CLAIM: u32 = 1 << 1;
+const PAUSE_REVOKE: u32 = 1 << 2;
+
 #[contract]
 pub struct BatchVestingContract;
 
@@ -54,6 +59,7 @@ pub enum DataKey {
     Admin,
     PendingAdmin,
     Paused,
+    PauseMask,
     /// #195: Permanent flag written on first set_admin and never cleared,
     /// even after renounce_admin.  Prevents admin re-claim post-renouncement.
     AdminInitialized,
@@ -168,15 +174,26 @@ impl BatchVestingContract {
         caller == schedule_sender
     }
 
-    fn is_paused(env: &Env) -> bool {
-        env.storage()
+    fn get_pause_mask(env: &Env) -> u32 {
+        let mut mask = env
+            .storage()
             .persistent()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
+            .get(&DataKey::PauseMask)
+            .unwrap_or(0u32);
+
+        // #228: Backward compatibility: if legacy Paused flag is set, treat as fully paused
+        if env.storage().persistent().get::<_, bool>(&DataKey::Paused).unwrap_or(false) {
+            mask |= PAUSE_DEPOSIT | PAUSE_CLAIM | PAUSE_REVOKE;
+        }
+        mask
     }
 
-    fn panic_if_paused(env: &Env) {
-        if Self::is_paused(env) {
+    fn is_operation_paused(env: &Env, op_mask: u32) -> bool {
+        (Self::get_pause_mask(env) & op_mask) != 0
+    }
+
+    fn panic_if_operation_paused(env: &Env, op_mask: u32) {
+        if Self::is_operation_paused(env, op_mask) {
             soroban_sdk::panic_with_error!(env, VestingError::Paused);
         }
     }
@@ -319,9 +336,16 @@ impl BatchVestingContract {
     }
 
     fn extend_ttl_paused(env: &Env) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Paused, BUMP_THRESHOLD, BUMP_EXTEND_TO);
+        if env.storage().persistent().has(&DataKey::PauseMask) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::PauseMask, BUMP_THRESHOLD, BUMP_EXTEND_TO);
+        }
+        if env.storage().persistent().has(&DataKey::Paused) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Paused, BUMP_THRESHOLD, BUMP_EXTEND_TO);
+        }
     }
 
     fn get_next_batch_id(env: &Env) -> u32 {
@@ -393,7 +417,7 @@ impl BatchVestingContract {
         start_time: u64,
         end_time: u64,
     ) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_DEPOSIT);
         sender.require_auth();
 
         if recipients.len() != amounts.len() {
@@ -501,7 +525,7 @@ impl BatchVestingContract {
 
     /// Propose a new admin. Only the current admin can nominate a successor.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_DEPOSIT | PAUSE_CLAIM | PAUSE_REVOKE);
         Self::require_current_admin(&env, &admin);
         Self::set_pending_admin_internal(&env, &new_admin);
         Self::extend_ttl_admin(&env);
@@ -536,7 +560,7 @@ impl BatchVestingContract {
 
     /// Renounce admin rights and clear any in-flight transfer.
     pub fn renounce_admin(env: Env, admin: Address) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_DEPOSIT | PAUSE_CLAIM | PAUSE_REVOKE);
         Self::require_current_admin(&env, &admin);
         Self::remove_admin_internal(&env);
         Self::remove_pending_admin_internal(&env);
@@ -545,14 +569,18 @@ impl BatchVestingContract {
             .publish((Symbol::new(&env, "AdminRenounced"),), admin);
     }
 
-    /// Toggle contract pause state. Only admin can toggle pause.
-    pub fn toggle_pause(env: Env, admin: Address, paused: bool) {
+    /// Update contract pause mask. Only admin can set the mask.
+    pub fn toggle_pause(env: Env, admin: Address, mask: u32) {
         Self::require_current_admin(&env, &admin);
-        env.storage().persistent().set(&DataKey::Paused, &paused);
+        env.storage().persistent().set(&DataKey::PauseMask, &mask);
+        // Clear legacy Paused flag if it exists to avoid confusion
+        if env.storage().persistent().has(&DataKey::Paused) {
+            env.storage().persistent().remove(&DataKey::Paused);
+        }
         Self::extend_ttl_paused(&env);
 
         env.events()
-            .publish((Symbol::new(&env, "PauseToggled"),), (admin, paused));
+            .publish((Symbol::new(&env, "PauseToggled"),), (admin, mask));
     }
 
     /// Update contract configuration. Only admin can call this.
@@ -568,7 +596,7 @@ impl BatchVestingContract {
 
     /// Revoke an unvested schedule by index.
     pub fn revoke(env: Env, caller: Address, recipient: Address, index: u32) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_REVOKE);
         caller.require_auth();
 
         let count = Self::get_vesting_count(&env, &recipient);
@@ -636,7 +664,7 @@ impl BatchVestingContract {
     /// removal does not corrupt the indices of pending requests that target the
     /// same recipient (#198).
     pub fn batch_revoke(env: Env, caller: Address, requests: Vec<RevokeRequest>) -> Vec<bool> {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_REVOKE);
         caller.require_auth();
         Self::panic_if_batch_too_large(&env, requests.len());
 
@@ -746,7 +774,7 @@ impl BatchVestingContract {
     ///
     /// All vested schedules are considered and pro-rata amounts are calculated.
     pub fn claim(env: Env, recipient: Address) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_CLAIM);
         recipient.require_auth();
 
         let count = Self::get_vesting_count(&env, &recipient);

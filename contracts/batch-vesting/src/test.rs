@@ -1790,7 +1790,7 @@ fn test_require_admin_not_set() {
 
     let admin = Address::generate(&env);
     // toggle_pause requires admin, but none is set
-    client.toggle_pause(&admin, &true);
+    client.toggle_pause(&admin, &7);
     client.deposit(&sender, &token.address, &recipients, &amounts, &start_time, &end_time);
 
     // At t=1250, 25% should be vested: 1000 * (1250-1000)/(2000-1000) = 250
