@@ -121,6 +121,91 @@ For advanced security:
 3. Update transaction signing in StellarService
 4. Add configuration for signers
 
+## Contract Development
+
+### Prerequisites
+
+To work on the Soroban smart contracts, you need:
+1. **Rust & WASM**: [Install Rust](https://rustup.rs/) and add the WASM target:
+   ```bash
+   rustup target add wasm32-unknown-unknown
+   ```
+2. **Stellar CLI**: [Install the Stellar CLI](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup#install-the-stellar-cli):
+   ```bash
+   cargo install --locked stellar-cli --features opt
+   ```
+3. **Docker**: Required for running a local Stellar node.
+
+### Local Environment Setup
+
+We use the [Stellar Quickstart](https://github.com/stellar/docker-stellar-quickstart) Docker image to run a local network with Soroban RPC enabled.
+
+1. **Start the local node**:
+   ```bash
+   docker-compose up -d
+   ```
+   This starts a standalone network with Horizon on port `8000` and Soroban RPC on port `8001`.
+
+2. **Configure Stellar CLI for Local**:
+   ```bash
+   stellar network add --rpc-url http://localhost:8001 --network-passphrase "Standalone Network ; February 2017" local
+   ```
+
+3. **Generate and Fund Test Keys**:
+   Create a local identity for deployment and testing:
+   ```bash
+   stellar keys generate --network local alice
+   ```
+   Note: In standalone mode, the CLI will automatically try to fund the account via the local friendbot. If you need to fund it manually:
+   ```bash
+   curl "http://localhost:8000/friendbot?addr=$(stellar keys address alice)"
+   ```
+
+### Building and Testing Contracts
+
+The contracts are located in the `contracts/` directory.
+
+1. **Build the contract**:
+   ```bash
+   cd contracts/batch-vesting
+   cargo build --target wasm32-unknown-unknown --release
+   ```
+
+2. **Run tests**:
+   ```bash
+   cargo test
+   ```
+
+### Deployment
+
+#### Deploy to Local
+Use the provided script to deploy to your local node:
+```bash
+./scripts/deploy-contract.sh local alice
+```
+
+#### Deploy to Testnet
+1. **Configure Testnet**:
+   ```bash
+   stellar network add --rpc-url https://soroban-testnet.stellar.org:443 --network-passphrase "Test SDF Test Network ; September 2015" testnet
+   ```
+2. **Generate/Add Testnet Account**:
+   ```bash
+   stellar keys generate --network testnet deployer
+   ```
+3. **Deploy**:
+   ```bash
+   ./scripts/deploy-contract.sh testnet deployer
+   ```
+
+### Contract Architecture: Batch Vesting
+
+The `batch-vesting` contract allows a sender to deposit tokens for multiple recipients with a shared unlock time.
+
+- **Storage**: Uses `Persistent` storage for vesting records.
+- **Limits**: Enforces `MAX_BATCH_SIZE = 100` to ensure transactions fit within ledger limits.
+- **Security**: Only the recipient can claim their funds, and only after the `unlock_time`.
+
 ## Testing Strategy
 
 ### Unit Tests
