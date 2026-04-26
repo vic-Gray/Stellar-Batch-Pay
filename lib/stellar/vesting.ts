@@ -38,8 +38,23 @@ function amountVecToScVal(amounts: string[]): xdr.ScVal {
 }
 
 /**
+ * Convert asset strings to token addresses.
+ * Handles both 'XLM' (native) and 'CODE:ISSUER' (issued assets).
+ */
+function assetToTokenAddress(asset: string, network: 'testnet' | 'mainnet'): string {
+  if (asset === 'XLM') {
+    // Native XLM wrapped address depends on network
+    return network === 'testnet'
+      ? 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC' // testnet
+      : 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4'; // mainnet
+  }
+  return asset.split(':')[1]; // Extract issuer from 'CODE:ISSUER'
+}
+
+/**
  * Build an unsigned Soroban deposit transaction XDR.
  * The returned XDR can be signed by Freighter or any other wallet and submitted via Soroban RPC.
+ * #210: Supports multiple tokens in a single batch (one token per recipient).
  */
 export async function buildDepositTransaction(
   contractId: string,
@@ -60,22 +75,23 @@ export async function buildDepositTransaction(
 
   const contract = new Contract(contractId);
 
-  // Derive token from the first payment's asset (format: "CODE:ISSUER" or "XLM")
-  const firstAsset = payments[0]?.asset ?? 'XLM';
-  const tokenAddress = firstAsset === 'XLM'
-    ? 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC' // native XLM wrapper (testnet)
-    : firstAsset.split(':')[1];
-
+  // #210: Extract tokens from each payment (one per recipient)
   const recipients = payments.map((p) => p.address);
   const amounts = payments.map((p) => p.amount);
+  const tokens = payments.map((p) => assetToTokenAddress(p.asset ?? 'XLM', network));
+
+  // Use current time as start_time; unlockTime is the end_time
+  const startTime = Math.floor(Date.now() / 1000);
+  const endTime = Math.max(unlockTime, startTime);
 
   const operation = contract.call(
     'deposit',
-    new Address(publicKey).toScVal(),          // sender: Address
-    new Address(tokenAddress).toScVal(),        // token: Address
-    addressVecToScVal(recipients),              // recipients: Vec<Address>
-    amountVecToScVal(amounts),                  // amounts: Vec<i128>
-    nativeToScVal(BigInt(unlockTime), { type: 'u64' }) // unlock_time: u64
+    new Address(publicKey).toScVal(),         // sender: Address
+    addressVecToScVal(tokens),                 // tokens: Vec<Address> (#210)
+    addressVecToScVal(recipients),             // recipients: Vec<Address>
+    amountVecToScVal(amounts),                 // amounts: Vec<i128>
+    nativeToScVal(BigInt(startTime), { type: 'u64' }),  // start_time: u64
+    nativeToScVal(BigInt(endTime), { type: 'u64' })     // end_time: u64
   );
 
   const tx = new TransactionBuilder(account, {

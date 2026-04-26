@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  stellar:
+    image: stellar/quickstart:latest
+    container_name: stellar-quickstart
+    ports:
+      - "8000:8000" # Horizon
+      - "8001:8001" # Soroban RPC
+    command: >
+      --standalone
+      --enable-soroban-rpc
+    volumes:
+      - stellar-data:/opt/stellar
+    networks:
+      - stellar-network
+
+volumes:
+  stellar-data:
+
+networks:
+  stellar-network:
+    driver: bridge

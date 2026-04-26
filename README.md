@@ -249,6 +249,8 @@ You need to allocate milestone grants to 40 builders, but unlock only at quarter
 
 ## For Developers
 
+For a detailed guide on architecture, local development setup, and contract development, see the [Development Guide](DEVELOPMENT.md).
+
 ### Installation
 
 ```bash

@@ -4,6 +4,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import StellarFooter from "@/components/landing/StellarFooter";
 import { Toaster } from "@/components/ui/toaster";
+import { WalletProvider } from "@/contexts/WalletContext";
+import { NetworkWarning } from "@/components/network-warning";
 import "./globals.css";
 
 const _geist = Geist({ subsets: ["latin"] });
@@ -40,7 +42,10 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`font-sans antialiased bg-[#0B0F1A] text-white`}>
-        {children}
+        <WalletProvider expectedNetwork="testnet">
+          {children}
+          <NetworkWarning />
+        </WalletProvider>
         <Toaster />
         <Analytics />
       </body>

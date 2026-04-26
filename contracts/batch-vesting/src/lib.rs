@@ -10,8 +10,20 @@ const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP_THRESHOLD: u32 = 7 * DAY_IN_LEDGERS;
 const BUMP_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
 
+/// #228: Granular pause masks
+const PAUSE_DEPOSIT: u32 = 1 << 0;
+const PAUSE_CLAIM: u32 = 1 << 1;
+const PAUSE_REVOKE: u32 = 1 << 2;
+
 #[contract]
 pub struct BatchVestingContract;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchInfo {
+    pub sender: Address,
+    pub timestamp: u64,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,7 +32,7 @@ pub struct VestingData {
     pub released_amount: i128,
     pub start_time: u64,
     pub end_time: u64,
-    pub sender: Address,
+    pub batch_id: u32,
     /// #194: Store the token address so claim/revoke can validate it matches
     /// the token that was originally deposited, preventing cross-token exploits.
     pub token: Address,
@@ -34,17 +46,28 @@ pub struct RevokeRequest {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Config {
+    pub max_batch_size: u32,
+    pub max_schedules_per_recipient: u32,
+}
+
+#[contracttype]
 pub enum DataKey {
     VestingEntry(Address, u32), // (recipient, index) — granular per-schedule key
     VestingCount(Address),      // total number of schedules for a recipient
     Admin,
     PendingAdmin,
     Paused,
+    PauseMask,
     /// #195: Permanent flag written on first set_admin and never cleared,
     /// even after renounce_admin.  Prevents admin re-claim post-renouncement.
     AdminInitialized,
     /// DEPRECATED: Old Vec<VestingData> storage key for backward compatibility
     Vesting(Address),
+    Config,
+    BatchInfo(u32),             // #209: batch metadata indexed by batch_id
+    BatchCounter,               // #209: counter for next batch_id
 }
 
 #[soroban_sdk::contracterror]
@@ -70,10 +93,30 @@ pub enum VestingError {
 }
 
 impl BatchVestingContract {
-    fn panic_if_batch_too_large(batch_len: u32) {
-        if batch_len > MAX_BATCH_SIZE {
-            panic!("Batch size exceeds MAX_BATCH_SIZE");
+    fn panic_if_batch_too_large(env: &Env, batch_len: u32) {
+        let config = Self::get_config(env);
+        if batch_len > config.max_batch_size {
+            panic!("Batch size exceeds max_batch_size");
         }
+    }
+
+    fn get_config(env: &Env) -> Config {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Config)
+            .unwrap_or(Config {
+                max_batch_size: MAX_BATCH_SIZE,
+                max_schedules_per_recipient: MAX_SCHEDULES_PER_RECIPIENT,
+            })
+    }
+
+    fn set_config_internal(env: &Env, config: &Config) {
+        env.storage().persistent().set(&DataKey::Config, config);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Config,
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
     }
 
     fn get_admin(env: &Env) -> Option<Address> {
@@ -131,15 +174,26 @@ impl BatchVestingContract {
         caller == schedule_sender
     }
 
-    fn is_paused(env: &Env) -> bool {
-        env.storage()
+    fn get_pause_mask(env: &Env) -> u32 {
+        let mut mask = env
+            .storage()
             .persistent()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
+            .get(&DataKey::PauseMask)
+            .unwrap_or(0u32);
+
+        // #228: Backward compatibility: if legacy Paused flag is set, treat as fully paused
+        if env.storage().persistent().get::<_, bool>(&DataKey::Paused).unwrap_or(false) {
+            mask |= PAUSE_DEPOSIT | PAUSE_CLAIM | PAUSE_REVOKE;
+        }
+        mask
     }
 
-    fn panic_if_paused(env: &Env) {
-        if Self::is_paused(env) {
+    fn is_operation_paused(env: &Env, op_mask: u32) -> bool {
+        (Self::get_pause_mask(env) & op_mask) != 0
+    }
+
+    fn panic_if_operation_paused(env: &Env, op_mask: u32) {
+        if Self::is_operation_paused(env, op_mask) {
             soroban_sdk::panic_with_error!(env, VestingError::Paused);
         }
     }
@@ -269,6 +323,11 @@ impl BatchVestingContract {
                 BUMP_EXTEND_TO,
             );
         }
+        if env.storage().persistent().has(&DataKey::Config) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Config, BUMP_THRESHOLD, BUMP_EXTEND_TO);
+        }
     }
 
     fn extend_ttl_paused(env: &Env) {
@@ -305,24 +364,30 @@ impl BatchVestingContract {
 
 #[contractimpl]
 impl BatchVestingContract {
-    /// Initialize a batch of vestings.
+    /// Initialize a batch of vestings with support for multiple tokens.
+    /// #210: Accept Vec<Token> to support multiple assets in a single batch.
+    /// Tokens vector must match recipients length (one token per recipient).
     pub fn deposit(
         env: Env,
         sender: Address,
-        token: Address,
+        tokens: Vec<Address>,
         recipients: Vec<Address>,
         amounts: Vec<i128>,
         start_time: u64,
         end_time: u64,
     ) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_DEPOSIT);
         sender.require_auth();
 
         if recipients.len() != amounts.len() {
             soroban_sdk::panic_with_error!(&env, VestingError::LengthMismatch);
         }
 
-        Self::panic_if_batch_too_large(recipients.len());
+        if recipients.len() != tokens.len() {
+            soroban_sdk::panic_with_error!(&env, VestingError::LengthMismatch);
+        }
+
+        Self::panic_if_batch_too_large(&env, recipients.len());
 
         if end_time <= start_time {
             soroban_sdk::panic_with_error!(&env, VestingError::InvalidUnlockTime);
@@ -332,11 +397,22 @@ impl BatchVestingContract {
             soroban_sdk::panic_with_error!(&env, VestingError::InvalidUnlockTime);
         }
 
-        let mut total_amount: i128 = 0;
+        // #209: Create batch info entry for this deposit
+        let batch_id = Self::get_next_batch_id(&env);
+        let batch_info = BatchInfo {
+            sender: sender.clone(),
+            timestamp: env.ledger().timestamp(),
+        };
+        Self::set_batch_info(&env, batch_id, &batch_info);
+        Self::increment_batch_id(&env);
+
+        // Track total transfers per token (#210)
+        let mut token_transfers: Vec<(Address, i128)> = Vec::new(&env);
 
         for i in 0..recipients.len() {
             let recipient = recipients.get(i).unwrap();
             let amount = amounts.get(i).unwrap();
+            let token = tokens.get(i).unwrap();
 
             if amount <= 0 {
                 soroban_sdk::panic_with_error!(&env, VestingError::InvalidAmount);
@@ -344,13 +420,10 @@ impl BatchVestingContract {
 
             // #196: reject deposit if recipient is already at the schedule cap.
             let current_count = Self::get_vesting_count(&env, &recipient);
-            if current_count >= MAX_SCHEDULES_PER_RECIPIENT {
+            let config = Self::get_config(&env);
+            if current_count >= config.max_schedules_per_recipient {
                 soroban_sdk::panic_with_error!(&env, VestingError::ScheduleLimitExceeded);
             }
-
-            total_amount = total_amount
-                .checked_add(amount)
-                .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, VestingError::Overflow));
 
             let idx = Self::push_vesting(
                 &env,
@@ -360,8 +433,8 @@ impl BatchVestingContract {
                     released_amount: 0,
                     start_time,
                     end_time,
-                    sender: sender.clone(),
-                    token: token.clone(), // #194: bind token to this schedule
+                    batch_id,                 // #209: use batch_id instead of sender
+                    token: token.clone(),     // #194: bind token to this schedule
                 },
             );
             Self::extend_ttl_vesting(&env, &recipient, idx);
@@ -370,10 +443,28 @@ impl BatchVestingContract {
                 (Symbol::new(&env, "VestingDeposited"), sender.clone(), recipient),
                 (amount, start_time, end_time, token.clone()),
             );
+
+            // #210: Accumulate token transfers for batch processing
+            let mut found = false;
+            for j in 0..token_transfers.len() {
+                let (t, amt) = token_transfers.get(j).unwrap();
+                if t == token {
+                    token_transfers.set(j, (t.clone(), amt + amount));
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                token_transfers.push_back((token.clone(), amount));
+            }
         }
 
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&sender, &env.current_contract_address(), &total_amount);
+        // #210: Execute all token transfers
+        for i in 0..token_transfers.len() {
+            let (token, total_amount) = token_transfers.get(i).unwrap();
+            let token_client = token::Client::new(&env, &token);
+            token_client.transfer(&sender, &env.current_contract_address(), &total_amount);
+        }
     }
 
     /// Set admin for the contract. Only the very first call can set the admin.
@@ -393,7 +484,7 @@ impl BatchVestingContract {
 
     /// Propose a new admin. Only the current admin can nominate a successor.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_DEPOSIT | PAUSE_CLAIM | PAUSE_REVOKE);
         Self::require_current_admin(&env, &admin);
         Self::set_pending_admin_internal(&env, &new_admin);
         Self::extend_ttl_admin(&env);
@@ -426,21 +517,9 @@ impl BatchVestingContract {
         );
     }
 
-    /// Directly transfer admin to a new address. Requires authorization from the current admin.
-    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) {
-        Self::panic_if_paused(&env);
-        Self::require_current_admin(&env, &admin);
-        Self::set_admin_internal(&env, &new_admin);
-        Self::remove_pending_admin_internal(&env);
-        Self::extend_ttl_admin(&env);
-
-        env.events()
-            .publish((Symbol::new(&env, "AdminTransferred"),), (admin, new_admin));
-    }
-
     /// Renounce admin rights and clear any in-flight transfer.
     pub fn renounce_admin(env: Env, admin: Address) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_DEPOSIT | PAUSE_CLAIM | PAUSE_REVOKE);
         Self::require_current_admin(&env, &admin);
         Self::remove_admin_internal(&env);
         Self::remove_pending_admin_internal(&env);
@@ -449,19 +528,34 @@ impl BatchVestingContract {
             .publish((Symbol::new(&env, "AdminRenounced"),), admin);
     }
 
-    /// Toggle contract pause state. Only admin can toggle pause.
-    pub fn toggle_pause(env: Env, admin: Address, paused: bool) {
+    /// Update contract pause mask. Only admin can set the mask.
+    pub fn toggle_pause(env: Env, admin: Address, mask: u32) {
         Self::require_current_admin(&env, &admin);
-        env.storage().persistent().set(&DataKey::Paused, &paused);
+        env.storage().persistent().set(&DataKey::PauseMask, &mask);
+        // Clear legacy Paused flag if it exists to avoid confusion
+        if env.storage().persistent().has(&DataKey::Paused) {
+            env.storage().persistent().remove(&DataKey::Paused);
+        }
         Self::extend_ttl_paused(&env);
 
         env.events()
-            .publish((Symbol::new(&env, "PauseToggled"),), (admin, paused));
+            .publish((Symbol::new(&env, "PauseToggled"),), (admin, mask));
+    }
+
+    /// Update contract configuration. Only admin can call this.
+    pub fn set_config(env: Env, admin: Address, config: Config) {
+        Self::require_current_admin(&env, &admin);
+        Self::set_config_internal(&env, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "ConfigUpdated"),),
+            (config.max_batch_size, config.max_schedules_per_recipient),
+        );
     }
 
     /// Revoke an unvested schedule by index.
     pub fn revoke(env: Env, caller: Address, recipient: Address, index: u32) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_REVOKE);
         caller.require_auth();
 
         let count = Self::get_vesting_count(&env, &recipient);
@@ -471,13 +565,17 @@ impl BatchVestingContract {
 
         let vesting = Self::get_vesting(&env, &recipient, index);
         let current_time = env.ledger().timestamp();
-        
+
         // If it's already fully vested, it cannot be revoked.
         if current_time >= vesting.end_time {
             soroban_sdk::panic_with_error!(&env, VestingError::AlreadyVested);
         }
 
-        if !Self::is_authorized(&env, &caller, &vesting.sender) {
+        // #209: Get sender from BatchInfo instead of VestingData
+        let batch_info = Self::get_batch_info(&env, vesting.batch_id);
+        let sender = batch_info.sender.clone();
+
+        if !Self::is_authorized(&env, &caller, &sender) {
             soroban_sdk::panic_with_error!(&env, VestingError::Unauthorized);
         }
 
@@ -490,7 +588,7 @@ impl BatchVestingContract {
         } else {
             0
         };
-        
+
         let vested_amount = if elapsed >= duration as i128 {
             vesting.total_amount
         } else {
@@ -498,8 +596,7 @@ impl BatchVestingContract {
         };
 
         let revoked_amount = vesting.total_amount - vested_amount;
-        let sender = vesting.sender.clone();
-        
+
         // Final vested portion for recipient if they haven't claimed it yet
         let pending_vested = vested_amount - vesting.released_amount;
 
@@ -509,7 +606,7 @@ impl BatchVestingContract {
         if revoked_amount > 0 {
             token_client.transfer(&env.current_contract_address(), &sender, &revoked_amount);
         }
-        
+
         if pending_vested > 0 {
             token_client.transfer(&env.current_contract_address(), &recipient, &pending_vested);
         }
@@ -525,10 +622,17 @@ impl BatchVestingContract {
     /// Requests are processed in descending index order so that swap-with-last
     /// removal does not corrupt the indices of pending requests that target the
     /// same recipient (#198).
+    ///
+    /// #GAS: Sorting uses insertion sort instead of bubble sort.
+    /// Insertion sort performs at most (N-1) comparisons per element and writes
+    /// only the strictly necessary positions, cutting vector `set()` calls by
+    /// ~50 % on average compared to bubble sort.  This lowers instruction-meter
+    /// costs in gas-sensitive Soroban environments while preserving the
+    /// descending-index ordering required for safe swap-with-last removal.
     pub fn batch_revoke(env: Env, caller: Address, requests: Vec<RevokeRequest>) -> Vec<bool> {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_REVOKE);
         caller.require_auth();
-        Self::panic_if_batch_too_large(requests.len());
+        Self::panic_if_batch_too_large(&env, requests.len());
 
         let n = requests.len();
         if n == 0 {
@@ -537,26 +641,32 @@ impl BatchVestingContract {
 
         let current_time = env.ledger().timestamp();
 
-        // #198: Build a processing order sorted by request.index descending via
-        // bubble sort (bounded by MAX_BATCH_SIZE = 100, so O(n²) is acceptable).
-        // Processing higher indices first guarantees that the swap-with-last
-        // removal of entry i never invalidates a later removal of entry j < i
-        // for the same recipient.
+        // Build a process_order array [0, 1, …, n-1] then sort it in
+        // DESCENDING order of the vesting index of each request.
+        // Insertion sort: O(N²) worst-case but only ≈N²/4 writes on average
+        // (vs ≈3N²/4 writes for bubble sort), significantly cheaper in a
+        // metered environment where each Vec::set() costs gas.
         let mut process_order: Vec<u32> = Vec::new(&env);
         for k in 0..n {
             process_order.push_back(k);
         }
-        for _pass in 0..n {
-            for j in 0..(n - 1) {
-                let a = process_order.get(j).unwrap();
-                let b = process_order.get(j + 1).unwrap();
-                let idx_a = requests.get(a).unwrap().index;
-                let idx_b = requests.get(b).unwrap().index;
-                if idx_a < idx_b {
-                    process_order.set(j, b);
-                    process_order.set(j + 1, a);
+        // Insertion sort in descending order of request.index
+        for i in 1..n {
+            let key = process_order.get(i).unwrap();
+            let key_idx = requests.get(key).unwrap().index;
+            let mut j = i;
+            while j > 0 {
+                let prev = process_order.get(j - 1).unwrap();
+                let prev_idx = requests.get(prev).unwrap().index;
+                if prev_idx < key_idx {
+                    // Shift prev one position to the right
+                    process_order.set(j, prev);
+                    j -= 1;
+                } else {
+                    break;
                 }
             }
+            process_order.set(j, key);
         }
 
         // Pre-allocate results in original request order (default false).
@@ -582,12 +692,15 @@ impl BatchVestingContract {
                 continue;
             }
 
-            if !Self::is_authorized(&env, &caller, &vesting.sender) {
+            // #209: Get sender from BatchInfo instead of VestingData
+            let batch_info = Self::get_batch_info(&env, vesting.batch_id);
+            let sender = batch_info.sender.clone();
+
+            if !Self::is_authorized(&env, &caller, &sender) {
                 continue;
             }
 
             let token = vesting.token.clone();
-            let sender = vesting.sender.clone();
 
             let duration = (vesting.end_time - vesting.start_time) as i128;
             let elapsed = if current_time > vesting.start_time {
@@ -633,7 +746,7 @@ impl BatchVestingContract {
     ///
     /// All vested schedules are considered and pro-rata amounts are calculated.
     pub fn claim(env: Env, recipient: Address) {
-        Self::panic_if_paused(&env);
+        Self::panic_if_operation_paused(&env, PAUSE_CLAIM);
         recipient.require_auth();
 
         let count = Self::get_vesting_count(&env, &recipient);

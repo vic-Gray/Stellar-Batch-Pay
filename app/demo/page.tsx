@@ -8,6 +8,7 @@ import { ResultsDisplay } from "@/components/results-display";
 import { JobProgress } from "@/components/job-progress";
 import { ConnectWalletButton } from "@/components/connect-wallet-button";
 import { useFreighter } from "@/hooks/use-freighter";
+import { useToast } from "@/components/ui/use-toast";
 import { parseInput, parseFileStream, validatePaymentInstructions } from "@/lib/stellar";
 import type {
   PaymentInstruction,
@@ -29,6 +30,7 @@ export default function Home() {
   const [result, setResult] = useState<BatchResult | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const { toast } = useToast();
 
   const [parsedCount, setParsedCount] = useState<number>(0);
 
@@ -147,6 +149,11 @@ export default function Home() {
           const submitData = await submitRes.json();
 
           if (submitData.success) {
+            toast({
+              title: "Transaction Successful",
+              description: `Batch ${i + 1} confirmed on Stellar ${network}.`,
+              variant: "default",
+            });
             for (const payment of batchPayments) {
               allResults.push({
                 recipient: payment.address,
@@ -158,6 +165,11 @@ export default function Home() {
               successCount++;
             }
           } else {
+            toast({
+              title: "Transaction Failed",
+              description: submitData.error || `Batch ${i + 1} failed to submit.`,
+              variant: "destructive",
+            });
             for (const payment of batchPayments) {
               allResults.push({
                 recipient: payment.address,

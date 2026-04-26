@@ -1,10 +1,10 @@
 "use client";
 
-import { useFreighter } from "@/hooks/use-freighter";
+import { useWallet } from "@/contexts/WalletContext";
 import { Button } from "@/components/ui/button";
 
 /**
- * "Connect Wallet" button that integrates with Freighter.
+ * "Connect Wallet" button that integrates with Freighter via WalletProvider.
  *
  * Shows:
  *  - "Connect Freighter" when disconnected
@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
  */
 export function ConnectWalletButton() {
     const { publicKey, isConnecting, isInstalled, error, connect, disconnect } =
-        useFreighter();
+        useWallet();
 
     // ── Freighter not installed ──────────────────────────────────
     if (isInstalled === false) {
