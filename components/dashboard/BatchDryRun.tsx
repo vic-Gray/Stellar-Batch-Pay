@@ -1,6 +1,7 @@
 "use client";
 
-import { CheckCircle2, AlertCircle, AlertTriangle, Info } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, AlertCircle, AlertTriangle, UserPlus, Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -13,6 +14,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { ParsedPaymentFile, PaymentValidationRow } from "@/lib/stellar/types";
+import { useAddressBook } from "@/contexts/AddressBookContext";
 
 interface BatchDryRunProps {
   result: ParsedPaymentFile;
@@ -22,7 +24,7 @@ interface BatchDryRunProps {
 export function BatchDryRun({ result, className }: BatchDryRunProps) {
   const { rows, validPayments, invalidCount } = result;
   const duplicateCount = rows.filter(r => r.isDuplicate).length;
-  
+
   // Calculate totals per asset
   const totals = validPayments.reduce((acc, curr) => {
     acc[curr.asset] = (acc[curr.asset] || 0) + Number(curr.amount);
@@ -116,7 +118,7 @@ export function BatchDryRun({ result, className }: BatchDryRunProps) {
 
 function RowItem({ row }: { row: PaymentValidationRow }) {
   const { rowNumber, instruction, valid, isDuplicate, error } = row;
-  
+
   return (
     <TableRow className={cn(
       "border-slate-800/50 transition-colors",
@@ -126,9 +128,7 @@ function RowItem({ row }: { row: PaymentValidationRow }) {
       <TableCell className="font-mono text-slate-500">{rowNumber}</TableCell>
       <TableCell className="max-w-[200px] truncate">
         <div className="flex flex-col">
-          <span className={cn("font-medium", !valid && "text-red-400")}>
-            {instruction.address || <span className="italic opacity-50">Empty</span>}
-          </span>
+          <RecipientDisplay address={instruction.address} valid={valid} />
           {error && (
             <span className={cn("text-[10px] mt-0.5", isDuplicate ? "text-amber-500" : "text-red-500")}>
               {error}
@@ -161,5 +161,67 @@ function RowItem({ row }: { row: PaymentValidationRow }) {
         )}
       </TableCell>
     </TableRow>
+  );
+}
+
+function RecipientDisplay({ address, valid }: { address: string; valid: boolean }) {
+  const { getName, saveName } = useAddressBook();
+  const name = getName(address);
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempName, setTempName] = useState("");
+
+  if (!address) return <span className="italic opacity-50">Empty</span>;
+
+  const handleSave = () => {
+    if (tempName.trim()) {
+      saveName(address, tempName.trim());
+      setIsEditing(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 group/addr">
+      {name ? (
+        <div className="flex items-center gap-1.5 leading-tight">
+          <span className="font-bold text-emerald-400">{name}</span>
+          <span className="text-[10px] text-slate-500 font-mono hidden group-hover/addr:inline truncate max-w-[80px]">
+            ({address.slice(0, 4)}...{address.slice(-4)})
+          </span>
+        </div>
+      ) : isEditing ? (
+        <div className="flex items-center gap-1">
+          <input
+            autoFocus
+            className="bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-white outline-none w-20"
+            placeholder="Name..."
+            value={tempName}
+            onChange={e => setTempName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSave()}
+            onBlur={() => setIsEditing(false)}
+          />
+          <button onClick={handleSave} className="text-emerald-500 hover:text-emerald-400">
+            <CheckCircle2 className="w-3 h-3" />
+          </button>
+        </div>
+      ) : (
+        <>
+          <span className={cn("font-mono text-xs", !valid && "text-red-400")}>
+            {address.slice(0, 6)}...{address.slice(-6)}
+          </span>
+          {valid && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsEditing(true);
+              }}
+              className="opacity-0 group-hover/addr:opacity-100 transition-opacity text-slate-500 hover:text-slate-300"
+              title="Add to Address Book"
+            >
+              <UserPlus className="w-3 h-3" />
+            </button>
+          )}
+        </>
+      )}
+    </div>
   );
 }

@@ -5,6 +5,7 @@ import { Analytics } from "@vercel/analytics/next";
 import StellarFooter from "@/components/landing/StellarFooter";
 import { Toaster } from "@/components/ui/toaster";
 import { WalletProvider } from "@/contexts/WalletContext";
+import { AddressBookProvider } from "@/contexts/AddressBookContext";
 import { NetworkWarning } from "@/components/network-warning";
 import "./globals.css";
 
@@ -43,8 +44,10 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className={`font-sans antialiased bg-[#0B0F1A] text-white`}>
         <WalletProvider expectedNetwork="testnet">
-          {children}
-          <NetworkWarning />
+          <AddressBookProvider>
+            {children}
+            <NetworkWarning />
+          </AddressBookProvider>
         </WalletProvider>
         <Toaster />
         <Analytics />

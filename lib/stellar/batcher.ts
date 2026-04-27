@@ -10,7 +10,7 @@ import {
   Operation,
   TransactionBuilder,
   Horizon,
-  SorobanRpc,
+  rpc as SorobanRpc,
 } from 'stellar-sdk';
 import Big from 'big.js';
 

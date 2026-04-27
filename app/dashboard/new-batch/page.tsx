@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { FileUpload } from "@/components/file-upload";
 import { ConnectWalletButton } from "@/components/connect-wallet-button";
 import { BatchDryRun } from "@/components/dashboard/BatchDryRun";
-import { useFreighter } from "@/hooks/use-freighter";
+import { useWallet } from "@/contexts/WalletContext";
 import { parsePaymentFile, getBatchSummary } from "@/lib/stellar";
 import type { ParsedPaymentFile, BatchResult } from "@/lib/stellar/types";
 import { Send, Info, Lightbulb, Check, AlertCircle, BookOpen } from "lucide-react";
@@ -29,8 +29,7 @@ export default function NewBatchPaymentPage() {
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<BatchResult | null>(null);
-
-  const { publicKey, signTx } = useFreighter();
+  const { publicKey, signTx } = useWallet();
 
   // STEP DEFINITIONS
   const steps = [
@@ -108,20 +107,18 @@ export default function NewBatchPaymentPage() {
               <button
                 disabled={step < s.id && (s.id > 1 && (!file || !summary))}
                 onClick={() => setStep(s.id)}
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-colors border-2 outline-hidden disabled:cursor-not-allowed ${
-                  step > s.id
+                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-colors border-2 outline-hidden disabled:cursor-not-allowed ${step > s.id
                     ? "bg-emerald-500 border-emerald-500 text-white cursor-pointer hover:bg-emerald-600"
                     : step === s.id
-                    ? "bg-[#0B0F1A] border-emerald-500 text-emerald-500"
-                    : "bg-[#0B0F1A] border-slate-700 text-slate-500"
-                }`}
+                      ? "bg-[#0B0F1A] border-emerald-500 text-emerald-500"
+                      : "bg-[#0B0F1A] border-slate-700 text-slate-500"
+                  }`}
               >
                 {step > s.id ? <Check className="w-4 h-4" /> : s.id}
               </button>
               <span
-                className={`text-xs font-medium hidden sm:block ${
-                  step >= s.id ? "text-emerald-500" : "text-slate-500"
-                }`}
+                className={`text-xs font-medium hidden sm:block ${step >= s.id ? "text-emerald-500" : "text-slate-500"
+                  }`}
               >
                 {s.name}
               </span>
@@ -209,14 +206,14 @@ export default function NewBatchPaymentPage() {
               <p className="text-slate-400 text-sm">Review identified issues before proceeding.</p>
             </div>
             <div className="flex gap-3">
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={() => setStep(1)}
                 className="border-slate-800 text-slate-300 hover:bg-slate-800"
               >
                 Re-upload
               </Button>
-              <Button 
+              <Button
                 onClick={() => setStep(3)}
                 disabled={validationResult.validPayments.length === 0}
                 className="bg-emerald-500 hover:bg-emerald-600 text-white"

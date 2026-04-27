@@ -107,6 +107,7 @@ export interface VestingData {
   recipient: string;
   index: number;
   memo: string;
+  vestingStep: number;
   ttlStatus?: "healthy" | "warning" | "expired";
   remainingDays?: number;
 }

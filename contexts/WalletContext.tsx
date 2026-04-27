@@ -1,7 +1,8 @@
 "use client";
 
 import React, { createContext, useContext, useCallback, useEffect, useState } from "react";
-import { useFreighter } from "@/hooks/use-freighter";
+import { useStellarWallet, SigningMethod } from "@/hooks/use-stellar-wallet";
+import { Sep7Modal } from "@/components/dashboard/Sep7Modal";
 
 export type SorobanNetwork = "mainnet" | "testnet" | "futurenet";
 
@@ -17,6 +18,10 @@ interface WalletContextType {
   disconnect: () => void;
   signTx: (xdr: string, network: SorobanNetwork) => Promise<string>;
   selectNetwork: (network: SorobanNetwork) => void;
+  method: SigningMethod | null;
+  sep7Uri: string | null;
+  isSep7ModalOpen: boolean;
+  setSep7ModalOpen: (open: boolean) => void;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
@@ -27,54 +32,45 @@ export interface WalletProviderProps {
 }
 
 export function WalletProvider({ children, expectedNetwork = "testnet" }: WalletProviderProps) {
-  const freighter = useFreighter();
-  const [savedPublicKey, setSavedPublicKey] = useState<string | null>(null);
+  const wallet = useStellarWallet();
   const [selectedNetwork, setSelectedNetwork] = useState<SorobanNetwork>(expectedNetwork);
   const [detectedNetwork, setDetectedNetwork] = useState<SorobanNetwork | null>(null);
   const [networkMismatch, setNetworkMismatch] = useState(false);
 
-  // Restore wallet from localStorage on mount
+  // Restore network from localStorage on mount
   useEffect(() => {
-    const stored = localStorage.getItem("wallet_public_key");
-    if (stored) {
-      setSavedPublicKey(stored);
-    }
     const storedNetwork = (localStorage.getItem("wallet_network") as SorobanNetwork) || expectedNetwork;
     setSelectedNetwork(storedNetwork);
   }, [expectedNetwork]);
 
-  // Detect network from Freighter (simplified; Freighter doesn't expose network directly)
-  // In production, you'd fetch this from Soroban RPC or a config service
+  // Detect network 
   useEffect(() => {
-    if (freighter.publicKey) {
-      // Default to stored network; in future could detect from Freighter settings
+    if (wallet.publicKey) {
+      // Default to stored network
       const stored = (localStorage.getItem("wallet_network") as SorobanNetwork) || expectedNetwork;
       setDetectedNetwork(stored);
       setNetworkMismatch(stored !== selectedNetwork);
-      localStorage.setItem("wallet_public_key", freighter.publicKey);
-      setSavedPublicKey(freighter.publicKey);
+      localStorage.setItem("wallet_public_key", wallet.publicKey);
     } else {
-      setSavedPublicKey(null);
       setDetectedNetwork(null);
       localStorage.removeItem("wallet_public_key");
     }
-  }, [freighter.publicKey, selectedNetwork, expectedNetwork]);
+  }, [wallet.publicKey, selectedNetwork, expectedNetwork]);
 
   const handleConnect = useCallback(async () => {
     try {
-      await freighter.connect();
+      await wallet.connect();
       localStorage.setItem("wallet_network", selectedNetwork);
     } catch (err) {
       console.error("Failed to connect wallet:", err);
     }
-  }, [freighter, selectedNetwork]);
+  }, [wallet, selectedNetwork]);
 
   const handleDisconnect = useCallback(() => {
-    freighter.disconnect();
+    wallet.disconnect();
     localStorage.removeItem("wallet_public_key");
     localStorage.removeItem("wallet_network");
-    setSavedPublicKey(null);
-  }, [freighter]);
+  }, [wallet]);
 
   const handleSelectNetwork = useCallback((network: SorobanNetwork) => {
     setSelectedNetwork(network);
@@ -84,16 +80,16 @@ export function WalletProvider({ children, expectedNetwork = "testnet" }: Wallet
 
   const handleSignTx = useCallback(
     async (xdr: string, network: SorobanNetwork): Promise<string> => {
-      return freighter.signTx(xdr, network === "mainnet" ? "mainnet" : "testnet");
+      return wallet.signTx(xdr, network === "mainnet" ? "mainnet" : "testnet");
     },
-    [freighter]
+    [wallet]
   );
 
   const value: WalletContextType = {
-    publicKey: freighter.publicKey,
-    isConnecting: freighter.isConnecting,
-    isInstalled: freighter.isInstalled,
-    error: freighter.error,
+    publicKey: wallet.publicKey,
+    isConnecting: wallet.isConnecting,
+    isInstalled: true, // SEP-7 is always "installed"
+    error: null,
     network: detectedNetwork,
     networkMismatch,
     expectedNetwork: selectedNetwork,
@@ -101,9 +97,22 @@ export function WalletProvider({ children, expectedNetwork = "testnet" }: Wallet
     disconnect: handleDisconnect,
     signTx: handleSignTx,
     selectNetwork: handleSelectNetwork,
+    method: wallet.method,
+    sep7Uri: wallet.sep7Uri,
+    isSep7ModalOpen: wallet.isSep7ModalOpen,
+    setSep7ModalOpen: wallet.setSep7ModalOpen,
   };
 
-  return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
+  return (
+    <WalletContext.Provider value={value}>
+      {children}
+      <Sep7Modal
+        isOpen={wallet.isSep7ModalOpen}
+        onOpenChange={wallet.setSep7ModalOpen}
+        uri={wallet.sep7Uri}
+      />
+    </WalletContext.Provider>
+  );
 }
 
 export function useWallet(): WalletContextType {

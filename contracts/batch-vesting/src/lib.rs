@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
+};
 
 const MAX_BATCH_SIZE: u32 = 100;
 /// #196: Cap the number of vesting schedules per recipient to prevent unbounded
@@ -14,6 +16,8 @@ const BUMP_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
 const PAUSE_DEPOSIT: u32 = 1 << 0;
 const PAUSE_CLAIM: u32 = 1 << 1;
 const PAUSE_REVOKE: u32 = 1 << 2;
+
+const UPGRADE_TIMELOCK: u64 = 7 * 24 * 60 * 60; // 7 days in seconds
 
 #[contract]
 pub struct BatchVestingContract;
@@ -32,11 +36,20 @@ pub struct VestingData {
     pub released_amount: i128,
     pub start_time: u64,
     pub end_time: u64,
+    pub vesting_step: u64, // #253: Custom linear vesting steps (0 or 1 = continuous)
+    pub sender: Address,   // #254: Added back missing sender field
     pub batch_id: u32,
     /// #194: Store the token address so claim/revoke can validate it matches
     /// the token that was originally deposited, preventing cross-token exploits.
     pub token: Address,
     pub memo: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub new_wasm_hash: BytesN<32>,
+    pub execute_at: u64,
 }
 
 #[contracttype]
@@ -69,6 +82,7 @@ pub enum DataKey {
     Config,
     BatchInfo(u32),             // #209: batch metadata indexed by batch_id
     BatchCounter,               // #209: counter for next batch_id
+    UpgradeProposal,            // #254: pending contract upgrade
 }
 
 #[soroban_sdk::contracterror]
@@ -91,6 +105,10 @@ pub enum VestingError {
     ScheduleLimitExceeded = 12,
     /// Arithmetic operation resulted in an overflow.
     Overflow = 13,
+    /// #253: Vesting duration is not evenly divisible by vesting_step.
+    InvalidVestingStep = 14,
+    /// #254: Timelock for upgrade has not yet expired.
+    TimelockNotExpired = 15,
 }
 
 impl BatchVestingContract {
@@ -216,7 +234,9 @@ impl BatchVestingContract {
                     released_amount: legacy_vesting.released_amount,
                     start_time: legacy_vesting.start_time,
                     end_time: legacy_vesting.end_time,
+                    vesting_step: 0,
                     sender: legacy_vesting.sender.clone(),
+                    batch_id: 0, // Legacy data has no batch_id
                     token: legacy_vesting.token.clone(),
                     memo: String::from_str(env, ""),
                 };
@@ -242,15 +262,81 @@ impl BatchVestingContract {
                 .persistent()
                 .remove(&DataKey::VestingCount(recipient.clone()));
         } else {
-            env.storage()
-                .persistent()
-                .set(&DataKey::VestingCount(recipient.clone()), &count);
+            env.storage().persistent().set(&DataKey::VestingCount(recipient.clone()), &count);
             env.storage().persistent().extend_ttl(
                 &DataKey::VestingCount(recipient.clone()),
                 BUMP_THRESHOLD,
                 BUMP_EXTEND_TO,
             );
         }
+    }
+
+    fn get_upgrade_proposal(env: &Env) -> Option<UpgradeProposal> {
+        env.storage().persistent().get(&DataKey::UpgradeProposal)
+    }
+
+    fn set_upgrade_proposal(env: &Env, proposal: &UpgradeProposal) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::UpgradeProposal, proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UpgradeProposal,
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
+    }
+
+    fn remove_upgrade_proposal(env: &Env) {
+        env.storage().persistent().remove(&DataKey::UpgradeProposal);
+    }
+
+    fn calculate_vested_amount(total: i128, elapsed: i128, duration: i128, step: u64) -> i128 {
+        if step == 0 {
+            // Default: Cliff behavior (all at end)
+            if elapsed >= duration {
+                total
+            } else {
+                0
+            }
+        } else {
+            // Step-based linear vesting
+            let step_i128 = step as i128;
+            let num_steps = duration / step_i128;
+            let current_step = elapsed / step_i128;
+            
+            if current_step >= num_steps {
+                total
+            } else {
+                (total * current_step) / num_steps
+            }
+        }
+    }
+
+    fn get_batch_info(env: &Env, batch_id: u32) -> BatchInfo {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BatchInfo(batch_id))
+            .unwrap_or_else(|| panic!("Batch info not found"))
+    }
+
+    fn set_batch_info(env: &Env, batch_id: u32, info: &BatchInfo) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::BatchInfo(batch_id), info);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BatchInfo(batch_id),
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
+    }
+
+    fn get_next_batch_id(env: &Env) -> u32 {
+        env.storage().persistent().get(&DataKey::BatchCounter).unwrap_or(0)
+    }
+
+    fn increment_batch_id(env: &Env) {
+        let next = Self::get_next_batch_id(env) + 1;
+        env.storage().persistent().set(&DataKey::BatchCounter, &next);
     }
 
     /// Appends a new vesting schedule for a recipient and returns its index.
@@ -385,6 +471,7 @@ impl BatchVestingContract {
         amounts: Vec<i128>,
         start_time: u64,
         end_time: u64,
+        vesting_step: u64,
         memos: Vec<String>,
     ) {
         Self::panic_if_operation_paused(&env, PAUSE_DEPOSIT);
@@ -406,6 +493,12 @@ impl BatchVestingContract {
 
         if end_time <= env.ledger().timestamp() {
             soroban_sdk::panic_with_error!(&env, VestingError::InvalidUnlockTime);
+        }
+
+        // #253: Validate vesting step
+        let duration = end_time - start_time;
+        if vesting_step > 1 && duration % vesting_step != 0 {
+            soroban_sdk::panic_with_error!(&env, VestingError::InvalidVestingStep);
         }
 
         // #209: Create batch info entry for this deposit
@@ -444,7 +537,9 @@ impl BatchVestingContract {
                     released_amount: 0,
                     start_time,
                     end_time,
+                    vesting_step,
                     sender: sender.clone(),
+                    batch_id,
                     token: token.clone(), // #194: bind token to this schedule
                     memo: memos.get(i).unwrap(),
                 },
@@ -453,7 +548,7 @@ impl BatchVestingContract {
 
             env.events().publish(
                 (Symbol::new(&env, "VestingDeposited"), sender.clone(), recipient),
-                (amount, start_time, end_time, token.clone(), memos.get(i).unwrap()),
+                (amount, start_time, end_time, vesting_step, token.clone(), memos.get(i).unwrap()),
             );
 
             // #210: Accumulate token transfers for batch processing
@@ -601,11 +696,12 @@ impl BatchVestingContract {
             0
         };
 
-        let vested_amount = if elapsed >= duration as i128 {
-            vesting.total_amount
-        } else {
-            vesting.total_amount * elapsed / duration
-        };
+        let vested_amount = Self::calculate_vested_amount(
+            vesting.total_amount,
+            elapsed,
+            duration,
+            vesting.vesting_step,
+        );
 
         let revoked_amount = vesting.total_amount - vested_amount;
 
@@ -721,11 +817,12 @@ impl BatchVestingContract {
                 0
             };
             
-            let vested_amount = if elapsed >= duration as i128 {
-                vesting.total_amount
-            } else {
-                vesting.total_amount * elapsed / duration
-            };
+            let vested_amount = Self::calculate_vested_amount(
+                vesting.total_amount,
+                elapsed,
+                duration,
+                vesting.vesting_step,
+            );
 
             let revoked_amount = vesting.total_amount - vested_amount;
             let pending_vested = vested_amount - vesting.released_amount;
@@ -751,7 +848,44 @@ impl BatchVestingContract {
 
     /// Return the contract version string.
     pub fn version(env: Env) -> String {
-        String::from_str(&env, "1.0.0")
+        String::from_str(&env, "1.1.0")
+    }
+
+    /// Propose a contract upgrade. Only admin can propose.
+    pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_current_admin(&env, &admin);
+        let execute_at = env.ledger().timestamp() + UPGRADE_TIMELOCK;
+        let proposal = UpgradeProposal {
+            new_wasm_hash: new_wasm_hash.clone(),
+            execute_at,
+        };
+        Self::set_upgrade_proposal(&env, &proposal);
+        
+        env.events().publish(
+            (Symbol::new(&env, "UpgradeProposed"),),
+            (new_wasm_hash, execute_at),
+        );
+    }
+
+    /// Execute a proposed contract upgrade. Only admin can execute.
+    pub fn execute_upgrade(env: Env, admin: Address) {
+        Self::require_current_admin(&env, &admin);
+        let proposal = Self::get_upgrade_proposal(&env).unwrap_or_else(|| {
+            soroban_sdk::panic_with_error!(&env, VestingError::NotFound)
+        });
+
+        if env.ledger().timestamp() < proposal.execute_at {
+            soroban_sdk::panic_with_error!(&env, VestingError::TimelockNotExpired);
+        }
+
+        Self::remove_upgrade_proposal(&env);
+        env.deployer()
+            .update_current_contract_wasm(proposal.new_wasm_hash.clone());
+
+        env.events().publish(
+            (Symbol::new(&env, "UpgradeExecuted"),),
+            (proposal.new_wasm_hash,),
+        );
     }
 
     /// Claim all vested (unlocked) funds for the given recipient.
@@ -781,11 +915,12 @@ impl BatchVestingContract {
             let duration = (vesting.end_time - vesting.start_time) as i128;
             let elapsed = (current_time - vesting.start_time) as i128;
             
-            let vested_amount = if current_time >= vesting.end_time {
-                vesting.total_amount
-            } else {
-                vesting.total_amount * elapsed / duration
-            };
+            let vested_amount = Self::calculate_vested_amount(
+                vesting.total_amount,
+                elapsed,
+                duration,
+                vesting.vesting_step,
+            );
 
             let claimable = vested_amount - vesting.released_amount;
 
@@ -866,5 +1001,5 @@ impl BatchVestingContract {
         }
     }
 }
-// mod test;
+mod test;
 mod ttl_test;

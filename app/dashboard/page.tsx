@@ -5,13 +5,13 @@ import { OverviewMetrics } from "@/components/dashboard/overview-metrics";
 import { PaymentVolumeChart } from "@/components/dashboard/PaymentVolumeChart";
 import { QuickActions } from "@/components/dashboard/QuickActions";
 import { DeveloperResources } from "@/components/dashboard/developer-resources";
-import { useFreighter } from "@/hooks/use-freighter";
+import { useWallet } from "@/contexts/WalletContext";
 import { useDashboardMetrics } from "@/hooks/use-dashboard-metrics";
 import { VestingTTLAlert } from "@/components/dashboard/VestingTTLAlert";
 import { useState } from "react";
 
 export default function DashboardPage() {
-  const { publicKey } = useFreighter();
+  const { publicKey } = useWallet();
   const { metrics, loading } = useDashboardMetrics(publicKey, "testnet"); // Assuming testnet for now
   const [isBumping, setIsBumping] = useState(false);
 
@@ -27,9 +27,9 @@ export default function DashboardPage() {
   return (
     <div className="space-y-8">
       {/* TTL Warning Banner */}
-      <VestingTTLAlert 
-        remainingDays={mockTTL.remainingDays} 
-        totalDays={mockTTL.totalDays} 
+      <VestingTTLAlert
+        remainingDays={mockTTL.remainingDays}
+        totalDays={mockTTL.totalDays}
         onBump={handleBump}
         isBumping={isBumping}
       />

@@ -28,11 +28,12 @@ fn test_ttl_bumping_logic() {
     // Initial deposit
     client.deposit(
         &sender,
-        &token.address,
+        &Vec::from_array(&env, [token.address.clone()]),
         &Vec::from_array(&env, [recipient.clone()]),
         &Vec::from_array(&env, [1000]),
         &1000,
         &2000,
+        &0,
         &Vec::from_array(&env, [soroban_sdk::String::from_str(&env, "Test Memo")]),
     );
 

@@ -19,13 +19,13 @@ import {
 } from "@/components/ui/dialog";
 import { AlertTriangle, Wallet, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { useFreighter } from "@/hooks/use-freighter";
+import { useWallet } from "@/contexts/WalletContext";
 
 type ConfirmAction = "disconnect" | "delete" | null;
 
 export function DangerZoneCard() {
   const { toast } = useToast();
-  const { disconnect } = useFreighter();
+  const { disconnect } = useWallet();
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
 
   const handleConfirm = () => {
@@ -90,9 +90,8 @@ export function DangerZoneCard() {
           {actions.map((action, index) => (
             <div
               key={action.id}
-              className={`flex items-center justify-between gap-4 py-5 ${
-                index !== 0 ? "border-t border-red-900/30" : ""
-              }`}
+              className={`flex items-center justify-between gap-4 py-5 ${index !== 0 ? "border-t border-red-900/30" : ""
+                }`}
             >
               <div className="space-y-1 min-w-0">
                 <div className="text-white font-semibold">{action.title}</div>

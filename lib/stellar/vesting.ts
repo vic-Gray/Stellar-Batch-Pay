@@ -60,61 +60,65 @@ function assetToTokenAddress(asset: string, network: 'testnet' | 'mainnet'): str
 export async function buildDepositTransaction(
   contractId: string,
   payments: PaymentInstruction[],
-  unlockTime: number,
+  startTime: number,
+  endTime: number,
+  vestingStep: number,
   network: 'testnet' | 'mainnet',
   publicKey: string
 ): Promise<string> {
   // Reentrancy guard: reject concurrent deposit calls for the same account (#250).
   const release = acquireGuard(publicKey, 'deposit');
   try {
-  const networkPassphrase = network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
-  const rpcUrl = SOROBAN_RPC_URLS[network];
+    const networkPassphrase = network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
+    const rpcUrl = SOROBAN_RPC_URLS[network];
 
-  // Dynamically import SorobanRpc to keep this tree-shakeable
-  const { SorobanRpc } = await import('stellar-sdk');
-  const server = new SorobanRpc.Server(rpcUrl, { allowHttp: false });
+    // Dynamically import rpc to keep this tree-shakeable
+    const { rpc: SorobanRpc } = await import('stellar-sdk');
+    const server = new SorobanRpc.Server(rpcUrl, { allowHttp: false });
 
-  const sourceAccount = await server.getAccount(publicKey);
-  const account = new Account(sourceAccount.accountId(), sourceAccount.sequenceNumber());
+    const sourceAccount = await server.getAccount(publicKey);
+    const account = new Account(sourceAccount.accountId(), sourceAccount.sequenceNumber());
 
-  const contract = new Contract(contractId);
+    const contract = new Contract(contractId);
 
-  // #210: Extract tokens from each payment (one per recipient)
-  const recipients = payments.map((p) => p.address);
-  const amounts = payments.map((p) => p.amount);
-  const memos = payments.map((p) => p.memo || '');
+    // #210: Extract tokens from each payment (one per recipient)
+    const tokens = payments.map((p) => assetToTokenAddress(p.asset, network));
+    const recipients = payments.map((p) => p.address);
+    const amounts = payments.map((p) => p.amount);
+    const memos = payments.map((p) => p.memo || '');
 
-  const operation = contract.call(
-    'deposit',
-    new Address(publicKey).toScVal(),          // sender: Address
-    new Address(tokenAddress).toScVal(),        // token: Address
-    addressVecToScVal(recipients),              // recipients: Vec<Address>
-    amountVecToScVal(amounts),                  // amounts: Vec<i128>
-    nativeToScVal(BigInt(unlockTime), { type: 'u64' }), // start_time: u64
-    nativeToScVal(BigInt(unlockTime + 31536000), { type: 'u64' }), // end_time: u64 (default 1 year)
-    xdr.ScVal.scvVec(memos.map(m => nativeToScVal(m, { type: 'string' }))) // memos: Vec<String>
-  );
+    const operation = contract.call(
+      'deposit',
+      new Address(publicKey).toScVal(),          // sender: Address
+      addressVecToScVal(tokens),                  // tokens: Vec<Address>
+      addressVecToScVal(recipients),              // recipients: Vec<Address>
+      amountVecToScVal(amounts),                  // amounts: Vec<i128>
+      nativeToScVal(BigInt(startTime), { type: 'u64' }), // start_time: u64
+      nativeToScVal(BigInt(endTime), { type: 'u64' }),   // end_time: u64
+      nativeToScVal(BigInt(vestingStep), { type: 'u64' }), // vesting_step: u64
+      xdr.ScVal.scvVec(memos.map(m => nativeToScVal(m, { type: 'string' }))) // memos: Vec<String>
+    );
 
-  const tx = new TransactionBuilder(account, {
-    fee: '1000000', // high fee ceiling; actual fee set after simulation
-    networkPassphrase,
-  })
-    .addOperation(operation)
-    .setTimeout(300)
-    .build();
+    const tx = new TransactionBuilder(account, {
+      fee: '1000000', // high fee ceiling; actual fee set after simulation
+      networkPassphrase,
+    })
+      .addOperation(operation)
+      .setTimeout(300)
+      .build();
 
-  // Simulate to populate the Soroban footprint (read/write keys + auth)
-  const simResult = await server.simulateTransaction(tx);
+    // Simulate to populate the Soroban footprint (read/write keys + auth)
+    const simResult = await server.simulateTransaction(tx);
 
-  if (SorobanRpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Soroban simulation failed: ${simResult.error}`);
-  }
+    if (SorobanRpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Soroban simulation failed: ${simResult.error}`);
+    }
 
-  // Assemble the transaction with the simulated footprint
-  const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
+    // Assemble the transaction with the simulated footprint
+    const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
 
-  // Return unsigned XDR for wallet signing
-  return preparedTx.toEnvelope().toXDR('base64');
+    // Return unsigned XDR for wallet signing
+    return preparedTx.toEnvelope().toXDR('base64');
   } finally {
     release();
   }
@@ -131,7 +135,7 @@ export async function buildBumpInstanceTtlTransaction(
   const networkPassphrase = network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
   const rpcUrl = SOROBAN_RPC_URLS[network];
 
-  const { SorobanRpc } = await import('stellar-sdk');
+  const { rpc: SorobanRpc } = await import('stellar-sdk');
   const server = new SorobanRpc.Server(rpcUrl, { allowHttp: false });
 
   const sourceAccount = await server.getAccount(publicKey);
@@ -170,7 +174,7 @@ export async function buildBumpVestingTtlTransaction(
   const networkPassphrase = network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
   const rpcUrl = SOROBAN_RPC_URLS[network];
 
-  const { SorobanRpc } = await import('stellar-sdk');
+  const { rpc: SorobanRpc } = await import('stellar-sdk');
   const server = new SorobanRpc.Server(rpcUrl, { allowHttp: false });
 
   const sourceAccount = await server.getAccount(publicKey);
