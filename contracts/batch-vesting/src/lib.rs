@@ -41,6 +41,18 @@ pub struct VestingData {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyVestingData {
+    pub total_amount: i128,
+    pub released_amount: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub sender: Address,
+    pub token: Address,
+    pub memo: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RevokeRequest {
     pub recipient: Address,
     pub index: u32,
@@ -99,6 +111,32 @@ impl BatchVestingContract {
         if batch_len > config.max_batch_size {
             panic!("Batch size exceeds max_batch_size");
         }
+    }
+
+    fn get_next_batch_id(env: &Env) -> u32 {
+        env.storage().persistent().get(&DataKey::BatchCounter).unwrap_or(0u32)
+    }
+
+    fn increment_batch_id(env: &Env) {
+        let current = Self::get_next_batch_id(env);
+        let next = current.checked_add(1).unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow));
+        env.storage().persistent().set(&DataKey::BatchCounter, &next);
+    }
+
+    fn get_batch_info(env: &Env, batch_id: u32) -> BatchInfo {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BatchInfo(batch_id))
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::NotFound))
+    }
+
+    fn set_batch_info(env: &Env, batch_id: u32, info: &BatchInfo) {
+        env.storage().persistent().set(&DataKey::BatchInfo(batch_id), info);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BatchInfo(batch_id),
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
     }
 
     fn get_config(env: &Env) -> Config {
@@ -199,24 +237,32 @@ impl BatchVestingContract {
         }
     }
 
-    /// Migrates old Vec<VestingData> to the new indexed mapping design on-the-fly.
     fn migrate_if_needed(env: &Env, recipient: &Address) {
         let old_key = DataKey::Vesting(recipient.clone());
         if let Some(old_vestings) = env
             .storage()
             .persistent()
-            .get::<_, Vec<VestingData>>(&old_key)
+            .get::<_, Vec<LegacyVestingData>>(&old_key)
         {
             let count = old_vestings.len();
             for i in 0..count {
                 let legacy_vesting = old_vestings.get(i).unwrap();
+                
+                let batch_id = Self::get_next_batch_id(env);
+                let batch_info = BatchInfo {
+                    sender: legacy_vesting.sender.clone(),
+                    timestamp: legacy_vesting.start_time,
+                };
+                Self::set_batch_info(env, batch_id, &batch_info);
+                Self::increment_batch_id(env);
+
                 // Map legacy VestingData to new structure
                 let vesting = VestingData {
                     total_amount: legacy_vesting.total_amount,
                     released_amount: legacy_vesting.released_amount,
                     start_time: legacy_vesting.start_time,
                     end_time: legacy_vesting.end_time,
-                    sender: legacy_vesting.sender.clone(),
+                    batch_id,
                     token: legacy_vesting.token.clone(),
                     memo: String::from_str(env, ""),
                 };
@@ -444,7 +490,7 @@ impl BatchVestingContract {
                     released_amount: 0,
                     start_time,
                     end_time,
-                    sender: sender.clone(),
+                    batch_id,
                     token: token.clone(), // #194: bind token to this schedule
                     memo: memos.get(i).unwrap(),
                 },
