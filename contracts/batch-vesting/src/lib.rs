@@ -119,6 +119,32 @@ impl BatchVestingContract {
         }
     }
 
+    fn get_next_batch_id(env: &Env) -> u32 {
+        env.storage().persistent().get(&DataKey::BatchCounter).unwrap_or(0u32)
+    }
+
+    fn increment_batch_id(env: &Env) {
+        let current = Self::get_next_batch_id(env);
+        let next = current.checked_add(1).unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::Overflow));
+        env.storage().persistent().set(&DataKey::BatchCounter, &next);
+    }
+
+    fn get_batch_info(env: &Env, batch_id: u32) -> BatchInfo {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BatchInfo(batch_id))
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(env, VestingError::NotFound))
+    }
+
+    fn set_batch_info(env: &Env, batch_id: u32, info: &BatchInfo) {
+        env.storage().persistent().set(&DataKey::BatchInfo(batch_id), info);
+        env.storage().persistent().extend_ttl(
+            &DataKey::BatchInfo(batch_id),
+            BUMP_THRESHOLD,
+            BUMP_EXTEND_TO,
+        );
+    }
+
     fn get_config(env: &Env) -> Config {
         env.storage()
             .persistent()
@@ -217,17 +243,25 @@ impl BatchVestingContract {
         }
     }
 
-    /// Migrates old Vec<VestingData> to the new indexed mapping design on-the-fly.
     fn migrate_if_needed(env: &Env, recipient: &Address) {
         let old_key = DataKey::Vesting(recipient.clone());
         if let Some(old_vestings) = env
             .storage()
             .persistent()
-            .get::<_, Vec<VestingData>>(&old_key)
+            .get::<_, Vec<LegacyVestingData>>(&old_key)
         {
             let count = old_vestings.len();
             for i in 0..count {
                 let legacy_vesting = old_vestings.get(i).unwrap();
+                
+                let batch_id = Self::get_next_batch_id(env);
+                let batch_info = BatchInfo {
+                    sender: legacy_vesting.sender.clone(),
+                    timestamp: legacy_vesting.start_time,
+                };
+                Self::set_batch_info(env, batch_id, &batch_info);
+                Self::increment_batch_id(env);
+
                 // Map legacy VestingData to new structure
                 let vesting = VestingData {
                     total_amount: legacy_vesting.total_amount,
