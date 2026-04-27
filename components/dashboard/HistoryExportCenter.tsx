@@ -1,0 +1,225 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { CalendarRange, Download, FileText, Wallet } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { useWallet } from "@/contexts/WalletContext";
+import { useBatchHistory } from "@/hooks/use-batch-history";
+import {
+  filterClaimExportRowsByDateRange,
+  toClaimExportCsv,
+  toClaimExportRows,
+  type ClaimExportRow,
+} from "@/lib/dashboard/history-export";
+
+function downloadCsv(filename: string, csv: string) {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function escapeHtml(input: string): string {
+  return input
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function toPrintableHtml(rows: ClaimExportRow[], walletAddress: string, fromDate: string, toDate: string) {
+  const rangeLabel = fromDate || toDate ? `${fromDate || "Any"} to ${toDate || "Any"}` : "All dates";
+  const bodyRows = rows
+    .map(
+      (row) => `
+      <tr>
+        <td>${escapeHtml(row.recipientAddress)}</td>
+        <td>${escapeHtml(row.token)}</td>
+        <td>${escapeHtml(row.amountClaimed)}</td>
+        <td>${escapeHtml(new Date(row.timestamp).toLocaleString())}</td>
+        <td>${escapeHtml(row.transactionHash)}</td>
+      </tr>`
+    )
+    .join("");
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Vesting Claim Export</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
+      h1 { margin: 0 0 8px; font-size: 20px; }
+      p { margin: 0 0 6px; font-size: 12px; color: #374151; }
+      table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+      th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; font-size: 11px; }
+      th { background: #f3f4f6; }
+    </style>
+  </head>
+  <body>
+    <h1>Vesting Claim Export</h1>
+    <p><strong>Wallet:</strong> ${escapeHtml(walletAddress)}</p>
+    <p><strong>Date Range:</strong> ${escapeHtml(rangeLabel)}</p>
+    <p><strong>Rows:</strong> ${rows.length}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Recipient Address</th>
+          <th>Token</th>
+          <th>Amount Claimed</th>
+          <th>Timestamp</th>
+          <th>Transaction Hash</th>
+        </tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  </body>
+</html>`;
+}
+
+export function HistoryExportCenter() {
+  const { history } = useBatchHistory();
+  const { publicKey } = useWallet();
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  const scopedRows = useMemo(() => toClaimExportRows(history, publicKey), [history, publicKey]);
+  const filteredRows = useMemo(
+    () => filterClaimExportRowsByDateRange(scopedRows, { from: fromDate || undefined, to: toDate || undefined }),
+    [scopedRows, fromDate, toDate]
+  );
+
+  const handleCsvExport = () => {
+    if (!filteredRows.length) {
+      toast.error("No claim data found for the selected date range.");
+      return;
+    }
+    const csv = toClaimExportCsv(filteredRows);
+    const dateTag = new Date().toISOString().slice(0, 10);
+    downloadCsv(`vesting-claims-${dateTag}.csv`, csv);
+    toast.success("CSV export generated.");
+  };
+
+  const handlePdfExport = () => {
+    if (!filteredRows.length) {
+      toast.error("No claim data found for the selected date range.");
+      return;
+    }
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      toast.error("Unable to open print window for PDF export.");
+      return;
+    }
+
+    const printable = toPrintableHtml(
+      filteredRows,
+      publicKey || "Unknown (connect wallet for scoped exports)",
+      fromDate,
+      toDate
+    );
+    printWindow.document.open();
+    printWindow.document.write(printable);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+    toast.success("Print dialog opened for PDF export.");
+  };
+
+  return (
+    <Card className="border-[#1F2937] bg-[#121827] shadow-lg">
+      <CardHeader className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <CardTitle className="text-white text-xl flex items-center gap-2">
+            <FileText className="h-5 w-5 text-[#00D98B]" />
+            Export Center
+          </CardTitle>
+          <div className="text-xs text-gray-400 flex items-center gap-1">
+            <Wallet className="h-3.5 w-3.5" />
+            {publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : "No wallet connected"}
+          </div>
+        </div>
+        <p className="text-sm text-gray-400">
+          Export claim history as CSV or PDF with date range filtering. Results default to your connected wallet history.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid gap-4 md:grid-cols-[1fr_1fr_auto_auto]">
+          <div className="space-y-2">
+            <label className="text-xs uppercase tracking-wide text-gray-400 flex items-center gap-1">
+              <CalendarRange className="h-3.5 w-3.5" />
+              From Date
+            </label>
+            <Input
+              type="date"
+              value={fromDate}
+              onChange={(event) => setFromDate(event.target.value)}
+              className="bg-[#0E1526] border-[#1F2937] text-white"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs uppercase tracking-wide text-gray-400 flex items-center gap-1">
+              <CalendarRange className="h-3.5 w-3.5" />
+              To Date
+            </label>
+            <Input
+              type="date"
+              value={toDate}
+              onChange={(event) => setToDate(event.target.value)}
+              className="bg-[#0E1526] border-[#1F2937] text-white"
+            />
+          </div>
+          <Button onClick={handleCsvExport} className="self-end bg-[#00D98B] text-[#04120C] hover:bg-[#00D98B]/90">
+            <Download className="mr-2 h-4 w-4" />
+            Export CSV
+          </Button>
+          <Button onClick={handlePdfExport} variant="outline" className="self-end border-[#00D98B]/40 text-[#00D98B]">
+            <FileText className="mr-2 h-4 w-4" />
+            Export PDF
+          </Button>
+        </div>
+
+        <div className="rounded-xl border border-[#1F2937] overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left">
+            <thead className="bg-[#0E1526] text-xs text-gray-400 uppercase tracking-wide">
+              <tr>
+                <th className="px-4 py-3">Recipient Address</th>
+                <th className="px-4 py-3">Token</th>
+                <th className="px-4 py-3">Amount Claimed</th>
+                <th className="px-4 py-3">Timestamp</th>
+                <th className="px-4 py-3">Transaction Hash</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {filteredRows.slice(0, 8).map((row) => (
+                <tr key={`${row.transactionHash}-${row.recipientAddress}`} className="border-t border-[#1F2937]/70">
+                  <td className="px-4 py-3 font-mono text-xs text-gray-300">{row.recipientAddress}</td>
+                  <td className="px-4 py-3 text-gray-200">{row.token}</td>
+                  <td className="px-4 py-3 text-white">{row.amountClaimed}</td>
+                  <td className="px-4 py-3 text-gray-300">{new Date(row.timestamp).toLocaleString()}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-gray-300">{row.transactionHash}</td>
+                </tr>
+              ))}
+              {!filteredRows.length && (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-400">
+                    No claim events found for the selected range.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="text-xs text-gray-500">
+          Showing {Math.min(filteredRows.length, 8)} of {filteredRows.length} rows.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}

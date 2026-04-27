@@ -5,6 +5,7 @@ import { HistoryFilterBar } from "@/components/dashboard/HistoryFilterBar";
 import { HistoryTable } from "@/components/dashboard/HistoryTable";
 import { Pagination } from "@/components/dashboard/Pagination";
 import { MetricsGrid } from "@/components/dashboard/MetricsGrid";
+import { HistoryExportCenter } from "@/components/dashboard/HistoryExportCenter";
 import { Card, CardContent } from "@/components/ui/card";
 
 export default function HistoryPage() {
@@ -35,6 +36,8 @@ export default function HistoryPage() {
           </div>
         </CardContent>
       </Card>
+
+      <HistoryExportCenter />
     </div>
   );
 }
