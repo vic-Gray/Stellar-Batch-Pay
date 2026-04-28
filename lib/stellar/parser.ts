@@ -6,6 +6,25 @@ import Papa from 'papaparse';
 import { ParsedPaymentFile, PaymentInstruction, MemoType } from './types';
 import { validatePaymentInstruction } from './validator';
 
+/**
+ * Sanitizes a string value to prevent CSV injection (Formula Injection)
+ * and strips HTML tags to prevent XSS.
+ */
+function sanitizeValue(value: string): string {
+  if (!value) return '';
+
+  // Strip HTML tags
+  let sanitized = value.replace(/<[^>]*>?/gm, '');
+
+  // Neutralize CSV formula injection characters: =, +, -, @
+  // If the string starts with these, we prepend a single quote to escape it
+  if (/^[=+\-@]/.test(sanitized)) {
+    sanitized = `'${sanitized}`;
+  }
+
+  return sanitized.trim();
+}
+
 export function parseJSON(content: string): PaymentInstruction[] {
   try {
     const data = JSON.parse(content);
@@ -74,17 +93,17 @@ export function parseCSV(content: string): PaymentInstruction[] {
 
   const instructions = parsed.data.map(row => {
     const instruction: PaymentInstruction = {
-      address: String(row.address || '').trim(),
-      amount: String(row.amount || '').trim(),
-      asset: String(row.asset || '').trim(),
+      address: sanitizeValue(String(row.address || '')),
+      amount: sanitizeValue(String(row.amount || '')),
+      asset: sanitizeValue(String(row.asset || '')),
     };
 
     if (hasMemo) {
-      const memo = String(row.memo || '').trim();
+      const memo = sanitizeValue(String(row.memo || ''));
       if (memo) {
         instruction.memo = memo;
         if (hasMemoType) {
-          const mt = String(row.memotype || '').trim().toLowerCase();
+          const mt = sanitizeValue(String(row.memotype || '')).toLowerCase();
           if (mt === 'text' || mt === 'id' || mt === 'none') {
             instruction.memoType = mt as MemoType;
           }
@@ -174,15 +193,15 @@ export function parseFileStream(
         const row = data[i];
 
         const instruction: PaymentInstruction = {
-          address: String(row.address || '').trim(),
-          amount: String(row.amount || '').trim(),
-          asset: String(row.asset || '').trim(),
+          address: sanitizeValue(String(row.address || '')),
+          amount: sanitizeValue(String(row.amount || '')),
+          asset: sanitizeValue(String(row.asset || '')),
         };
 
-        const memo = String(row.memo || '').trim();
+        const memo = sanitizeValue(String(row.memo || ''));
         if (memo) {
           instruction.memo = memo;
-          const mt = String(row.memotype || row.memoType || '').trim().toLowerCase();
+          const mt = sanitizeValue(String(row.memotype || row.memoType || '')).toLowerCase();
           if (mt === 'text' || mt === 'id' || mt === 'none') {
             instruction.memoType = mt as MemoType;
           }

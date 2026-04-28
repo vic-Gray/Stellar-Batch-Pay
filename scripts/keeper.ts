@@ -21,6 +21,8 @@ const U32_MAX = 2 ** 32 - 1;
 const MAINTENANCE_START_INDEX = readU32Env('MAINTENANCE_START_INDEX', 0);
 const MAINTENANCE_LIMIT = readU32Env('MAINTENANCE_LIMIT', 10);
 const BUMP_THRESHOLD_DAYS = 7;
+const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL;
+const LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD || '50'); // XLM
 
 if (!CONTRACT_ID) {
   console.error('MISSING CONTRACT_ID in environment');
@@ -39,6 +41,39 @@ function readU32Env(name: string, fallback: number): number {
   }
 
   return value;
+}
+
+async function sendAlert(message: string) {
+  console.log(`[ALERT] ${message}`);
+  if (!ALERT_WEBHOOK_URL) return;
+
+  try {
+    const response = await fetch(ALERT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `🚨 *Keeper Bot Alert*: ${message}` }),
+    });
+    if (!response.ok) {
+      console.error('Failed to send alert to webhook:', response.statusText);
+    }
+  } catch (error) {
+    console.error('Error sending alert:', error);
+  }
+}
+
+async function checkBalance(server: SorobanRpc.Server, publicKey: string) {
+  try {
+    const account = await server.getAccount(publicKey);
+    // native balance is usually the first element in balances array
+    const nativeBalance = account.balances.find(b => b.asset_type === 'native');
+    const balance = Number(nativeBalance?.balance || '0');
+
+    if (balance < LOW_BALANCE_THRESHOLD) {
+      await sendAlert(`Low balance warning! Sponsor wallet ${publicKey} has only ${balance} XLM remaining.`);
+    }
+  } catch (error) {
+    console.error('Failed to check balance:', error);
+  }
 }
 
 async function main() {
@@ -74,8 +109,15 @@ async function main() {
     // 2. Maintain contract instance
     await maintainInstance(server, contract, keeperKeypair);
 
+    // 3. Proactive balance check
+    await checkBalance(server, keeperKeypair.publicKey());
+
+    console.log('Keeper Bot finished successfully.');
+
   } catch (error) {
-    console.error('Keeper execution failed:', error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error('Keeper execution failed:', errorMsg);
+    await sendAlert(`Critical failure in Keeper Bot: ${errorMsg}`);
   }
 }
 

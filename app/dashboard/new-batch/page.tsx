@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileUpload } from "@/components/file-upload";
@@ -30,6 +30,19 @@ export default function NewBatchPaymentPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [result, setResult] = useState<BatchResult | null>(null);
   const { publicKey, signTx } = useWallet();
+
+  // UX: Warn before closing tab during submission (#287)
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isSubmitting) {
+        e.preventDefault();
+        e.returnValue = ""; // Standard way to show browser confirmation
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isSubmitting]);
 
   // STEP DEFINITIONS
   const steps = [

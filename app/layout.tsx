@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { WalletProvider } from "@/contexts/WalletContext";
 import { AddressBookProvider } from "@/contexts/AddressBookContext";
 import { NetworkWarning } from "@/components/network-warning";
+import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
 const _geist = Geist({ subsets: ["latin"] });
@@ -41,16 +42,23 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body className={`font-sans antialiased bg-[#0B0F1A] text-white`}>
-        <WalletProvider expectedNetwork="testnet">
-          <AddressBookProvider>
-            {children}
-            <NetworkWarning />
-          </AddressBookProvider>
-        </WalletProvider>
-        <Toaster />
-        <Analytics />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <WalletProvider expectedNetwork="testnet">
+            <AddressBookProvider>
+              {children}
+              <NetworkWarning />
+            </AddressBookProvider>
+          </WalletProvider>
+          <Toaster />
+          <Analytics />
+        </ThemeProvider>
       </body>
     </html>
   );
