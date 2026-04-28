@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { FileUpload } from "@/components/file-upload";
 import { ConnectWalletButton } from "@/components/connect-wallet-button";
 import { BatchDryRun } from "@/components/dashboard/BatchDryRun";
+import { CsvValidationErrors } from "@/components/csv-validation-errors";
 import { useWallet } from "@/contexts/WalletContext";
 import { parsePaymentFile, getBatchSummary } from "@/lib/stellar";
 import type { ParsedPaymentFile, BatchResult } from "@/lib/stellar/types";
@@ -237,15 +238,7 @@ export default function NewBatchPaymentPage() {
           </div>
 
           {validationResult.invalidCount > 0 && (
-            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex gap-3 items-start">
-              <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-              <div>
-                <h3 className="text-red-200 font-semibold text-sm">Invalid instructions found</h3>
-                <p className="text-red-300/80 text-xs mt-1">
-                  We found {validationResult.invalidCount} rows with errors. Only valid instructions will be included in the final batch.
-                </p>
-              </div>
-            </div>
+            <CsvValidationErrors validationResult={validationResult} maxVisibleErrors={5} />
           )}
 
           <BatchDryRun result={validationResult} />
