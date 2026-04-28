@@ -1042,10 +1042,71 @@ impl BatchVestingContract {
         );
     }
 
-    /// Claim all vested (unlocked) funds for the given recipient.
+    /// Claim up to `amount` tokens from the vesting schedule at `index`.
     ///
-    /// All vested schedules are considered and pro-rata amounts are calculated.
-    pub fn claim(env: Env, recipient: Address) {
+    /// Pass the full claimable balance as `amount` to drain the schedule in one
+    /// call.  The schedule is removed only when fully depleted; otherwise the
+    /// remaining balance stays locked and continues to vest.
+    pub fn claim(env: Env, recipient: Address, index: u32, amount: i128) {
+        Self::panic_if_operation_paused(&env, PAUSE_CLAIM);
+        recipient.require_auth();
+
+        if amount <= 0 {
+            soroban_sdk::panic_with_error!(&env, VestingError::InvalidAmount);
+        }
+
+        let count = Self::get_vesting_count(&env, &recipient);
+        if index >= count {
+            soroban_sdk::panic_with_error!(&env, VestingError::NotFound);
+        }
+
+        let mut vesting = Self::get_vesting(&env, &recipient, index);
+        let current_time = env.ledger().timestamp();
+
+        if current_time <= vesting.start_time {
+            soroban_sdk::panic_with_error!(&env, VestingError::StillLocked);
+        }
+
+        let duration = (vesting.end_time - vesting.start_time) as i128;
+        let elapsed = (current_time - vesting.start_time) as i128;
+
+        let vested_amount = Self::calculate_vested_amount(
+            vesting.total_amount,
+            elapsed,
+            duration,
+            vesting.vesting_step,
+        );
+
+        let claimable = vested_amount - vesting.released_amount;
+        if claimable <= 0 {
+            soroban_sdk::panic_with_error!(&env, VestingError::StillLocked);
+        }
+
+        // Cap the requested amount to what is actually claimable.
+        let transfer_amount = amount.min(claimable);
+
+        let token_client = token::Client::new(&env, &vesting.token);
+        token_client.transfer(&env.current_contract_address(), &recipient, &transfer_amount);
+
+        vesting.released_amount = vesting
+            .released_amount
+            .checked_add(transfer_amount)
+            .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, VestingError::Overflow));
+
+        if vesting.released_amount >= vesting.total_amount {
+            Self::remove_vesting(&env, &recipient, index);
+        } else {
+            Self::set_vesting(&env, &recipient, index, &vesting);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "VestingClaimed"), recipient.clone()),
+            (transfer_amount, vesting.token.clone(), vesting.memo),
+        );
+    }
+
+    /// Claim all currently vested tokens across every schedule for the recipient.
+    pub fn claim_all(env: Env, recipient: Address) {
         Self::panic_if_operation_paused(&env, PAUSE_CLAIM);
         recipient.require_auth();
 
@@ -1057,10 +1118,10 @@ impl BatchVestingContract {
         let current_time = env.ledger().timestamp();
         let mut claimed_something = false;
 
-        // Process schedules in reverse to handle removals via swap-with-last
+        // Process in reverse so swap-with-last removals don't skip entries.
         for i in (0..count).rev() {
             let mut vesting = Self::get_vesting(&env, &recipient, i);
-            
+
             if current_time <= vesting.start_time {
                 Self::extend_ttl_vesting(&env, &recipient, i);
                 continue;
@@ -1068,7 +1129,7 @@ impl BatchVestingContract {
 
             let duration = (vesting.end_time - vesting.start_time) as i128;
             let elapsed = (current_time - vesting.start_time) as i128;
-            
+
             let vested_amount = Self::calculate_vested_amount(
                 vesting.total_amount,
                 elapsed,

@@ -102,11 +102,11 @@ fn test_deposit_and_claim() {
         li.timestamp = 1001;
     });
 
-    client.claim(&recipient1);
+    client.claim_all(&recipient1);
     assert_eq!(token.balance(&recipient1), 100);
     assert_eq!(token.balance(&contract_id), 200);
 
-    client.claim(&recipient2);
+    client.claim_all(&recipient2);
     assert_eq!(token.balance(&recipient2), 200);
     assert_eq!(token.balance(&contract_id), 0);
 }
@@ -194,7 +194,7 @@ fn test_claim_after_revoke_fails() {
     });
     client.revoke(&sender, &recipient, &0);
 
-    client.claim(&recipient);
+    client.claim_all(&recipient);
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn test_claim_too_early() {
         li.timestamp = 500;
     });
 
-    client.claim(&recipient1);
+    client.claim_all(&recipient1);
 }
 
 #[test]
@@ -385,8 +385,7 @@ fn test_claim_unauthorized() {
     let recipient = Address::generate(&env);
     let _token = Address::generate(&env);
 
-    // This should fail because recipient hasn't authorized the call
-    client.claim(&recipient);
+    client.claim_all(&recipient);
 }
 
 #[test]
@@ -400,7 +399,7 @@ fn test_claim_no_vesting() {
     let recipient = Address::generate(&env);
     let _token = Address::generate(&env);
 
-    client.claim(&recipient);
+    client.claim_all(&recipient);
 }
 
 #[test]
@@ -540,7 +539,7 @@ fn test_events_emission() {
         li.timestamp = 1001;
     });
 
-    client.claim(&recipient1);
+    client.claim_all(&recipient1);
     let claim1_events = env.events().all();
     let claim_symbol = Symbol::new(&env, "VestingClaimed");
     let mut claim1_found = false;
@@ -560,7 +559,7 @@ fn test_events_emission() {
     assert!(claim1_found, "Should find claim event for recipient1");
 
     // Claim 2
-    client.claim(&recipient2);
+    client.claim_all(&recipient2);
     let claim2_events = env.events().all();
     let mut claim2_found = false;
 
@@ -635,7 +634,7 @@ fn test_multiple_vestings_different_unlocks() {
         li.timestamp = 1001;
     });
 
-    client.claim(&recipient);
+    client.claim_all(&recipient);
     assert_eq!(token.balance(&recipient), 100);
     assert_eq!(token.balance(&contract_id), 300);
 
@@ -644,7 +643,7 @@ fn test_multiple_vestings_different_unlocks() {
         li.timestamp = 2001;
     });
 
-    client.claim(&recipient);
+    client.claim_all(&recipient);
     assert_eq!(token.balance(&recipient), 400);
     assert_eq!(token.balance(&contract_id), 0);
 }
@@ -1192,10 +1191,10 @@ fn test_batch_revoke_partial_recipients() {
         li.timestamp = 1001;
     });
 
-    client.claim(&recipient2);
+    client.claim_all(&recipient2);
     assert_eq!(token.balance(&recipient2), 200);
 
-    client.claim(&recipient3);
+    client.claim_all(&recipient3);
     assert_eq!(token.balance(&recipient3), 300);
 }
 
@@ -1521,7 +1520,7 @@ fn test_claim_multi_token() {
         li.timestamp = 1001;
     });
 
-    client.claim(&recipient);
+    client.claim_all(&recipient);
 
     assert_eq!(token_a.balance(&recipient), 100);
     assert_eq!(token_b.balance(&recipient), 200);
@@ -1901,7 +1900,7 @@ fn test_claim_event_includes_token_address() {
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1001);
-    client.claim(&recipient);
+    client.claim(&recipient, &0, &100);
 
     let payload: (i128, Address, String) = find_event_data(&env, "VestingClaimed");
     assert_eq!(payload.0, 100i128, "amount mismatch");
@@ -2274,16 +2273,16 @@ fn test_step_based_vesting() {
     
     // At 500, first step (50%) is vested
     env.ledger().with_mut(|li| li.timestamp = 500);
-    client.claim(&recipient);
+    client.claim(&recipient, &0, &50);
     assert_eq!(token.balance(&recipient), 50);
 
     // At 750, still only 50% vested
     env.ledger().with_mut(|li| li.timestamp = 750);
-    // client.claim(&recipient); // Should fail/do nothing more
+    // client.claim(&recipient, &0, &50); // Should fail/do nothing more
     
     // At 1000, final step (100%) is vested
     env.ledger().with_mut(|li| li.timestamp = 1000);
-    client.claim(&recipient);
+    client.claim(&recipient, &0, &50);
     assert_eq!(token.balance(&recipient), 100);
 }
 
@@ -2361,4 +2360,145 @@ fn test_execute_upgrade_timelock_panic() {
     client.propose_upgrade(&admin, &new_wasm_hash);
     env.ledger().with_mut(|li| li.timestamp = 100 + UPGRADE_TIMELOCK - 1);
     client.execute_upgrade(&admin);
+}
+
+// ── Partial claim tests ───────────────────────────────────────────────────────
+
+#[test]
+fn test_partial_claim_keeps_schedule_active() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &1000);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [100i128]),
+        &0,
+        &1000,
+        &0,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1001);
+
+    // Claim only 40 out of 100 available
+    client.claim(&recipient, &0, &40);
+    assert_eq!(token.balance(&recipient), 40);
+
+    // Schedule still exists with 60 remaining
+    let vestings = client.get_vestings(&recipient, &0, &1);
+    assert_eq!(vestings.len(), 1);
+    assert_eq!(vestings.get(0).unwrap().released_amount, 40);
+
+    // Claim the rest
+    client.claim(&recipient, &0, &60);
+    assert_eq!(token.balance(&recipient), 100);
+
+    // Schedule is now removed
+    assert_eq!(client.get_vestings(&recipient, &0, &1).len(), 0);
+}
+
+#[test]
+fn test_partial_claim_capped_at_claimable() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &1000);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [100i128]),
+        &0,
+        &1000,
+        &0,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1001);
+
+    // Request more than available — should be capped to 100
+    client.claim(&recipient, &0, &999);
+    assert_eq!(token.balance(&recipient), 100);
+    assert_eq!(client.get_vestings(&recipient, &0, &1).len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #10)")]
+fn test_partial_claim_before_unlock_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &1000);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [100i128]),
+        &0,
+        &1000,
+        &0,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    // Cliff not reached — must fail with StillLocked (#10)
+    env.ledger().with_mut(|li| li.timestamp = 500);
+    client.claim(&recipient, &0, &50);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #5)")]
+fn test_partial_claim_zero_amount_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, BatchVestingContract);
+    let client = BatchVestingContractClient::new(&env, &contract_id);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (token, token_admin) = create_token_contract(&env, &Address::generate(&env));
+    token_admin.mint(&sender, &1000);
+
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.deposit(
+        &sender,
+        &Vec::from_array(&env, [token.address.clone()]),
+        &Vec::from_array(&env, [recipient.clone()]),
+        &Vec::from_array(&env, [100i128]),
+        &0,
+        &1000,
+        &0,
+        &Vec::from_array(&env, [String::from_str(&env, "")]),
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1001);
+    // Zero amount must fail with InvalidAmount (#5)
+    client.claim(&recipient, &0, &0);
 }
